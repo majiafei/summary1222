@@ -25,4 +25,19 @@ public class IntegerTest {
         });
         System.out.println(integerList);
     }
+
+    // 从大到小排序
+    public void testCompare() {
+        List<Integer> integerList = Lists.newArrayList(3, 4, 1);
+        integerList.sort((i1, i2) -> {
+            if (i1 > i2) {
+                return -1;
+            } else if (i1 == i2) {
+                return 0;
+            } else {
+                return 1;
+            }
+        });
+        System.out.println(integerList);
+    }
 }
