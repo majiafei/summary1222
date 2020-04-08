@@ -20,6 +20,7 @@ public class IntegerTest {
 //            public static int compare(int x, int y) {
 //                return (x < y) ? -1 : ((x == y) ? 0 : 1);
 //            }
+            // -1不需要交换位置，1需要交换位置
             return Integer.compare(i1, i2);
         });
         System.out.println(integerList);
