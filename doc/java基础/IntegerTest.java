@@ -17,6 +17,9 @@ public class IntegerTest {
         List<Integer> integerList = Lists.newArrayList(4, 3, 1);
         integerList.sort((i1, i2) -> {
             // 从小到大的顺序
+//            public static int compare(int x, int y) {
+//                return (x < y) ? -1 : ((x == y) ? 0 : 1);
+//            }
             return Integer.compare(i1, i2);
         });
         System.out.println(integerList);
