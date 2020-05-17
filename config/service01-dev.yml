@@ -1,2 +1,2 @@
-db.name=xxxx
-password='{cipher}ca5362ab9b5477e30c408b838859c30cc7874834d9bec93d7c46b0269f7da4c4'
+db:
+  name: xxxx
