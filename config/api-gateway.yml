@@ -2,7 +2,7 @@ zuul:
   routes:
     spring-cloud-web: #随便写的
       path: /order/**
-      serviceId: spring-cloud-web
+      spring-cloud-web: spring-cloud-web
     api-gateway:
       path: /local/**
       url: forward:/local #路由到本地
