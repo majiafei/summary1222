@@ -6,7 +6,4 @@ zuul:
     api-gateway:
       path: /local/**
       url: forward:/local #路由到本地
-    blog:
-      path: /blog/**
-      url: http://localhost:9092/
 #  sensitive-headers: ["xxx", "sdfsdf"]
