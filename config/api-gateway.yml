@@ -12,4 +12,7 @@ zuul:
     blog:
       path: /blog/**
       url: http://localhost:9092/
+    spring-cloud-auth-server:
+      path: /auth/**
+      serviceId: spring-cloud-auth-server
 #  sensitive-headers: ["xxx", "sdfsdf"]
