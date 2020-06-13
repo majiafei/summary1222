@@ -18,4 +18,7 @@ zuul:
     spring-cloud-auth-server-db:
       path: /db/auth/**
       serviceId: spring-cloud-auth-server-db
+    spring-clour-auth-server-jwt:
+      path: /jwt/auth/**
+      serviceId: spring-clour-auth-server-jwt
 #  sensitive-headers: ["xxx", "sdfsdf"]
