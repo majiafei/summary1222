@@ -73,6 +73,37 @@ public int loadBeanDefinitions(EncodedResource encodedResource) throws BeanDefin
 
 ### 解析bean标签
 
+#### xml标签对应的java类
+
+##### ConstructorArgumentValues
+
+存储为构造参数设置的值。
+
+```java
+// key为下标，value为设置的值
+private final Map<Integer, ValueHolder> indexedArgumentValues = new LinkedHashMap<>();
+// 如果没有设置index，就存储到这里
+private final List<ValueHolder> genericArgumentValues = new ArrayList<>();
+```
+
+##### RuntimeBeanReference
+
+封装ref属性的。
+
+##### TypedStringValue
+
+封装value属性的。
+
+##### ManagedArray
+
+封装array标签解析出来的数据。
+
+##### ManagedList
+
+封装list标签解析出来的数据。
+
+
+
 #### BeanDefinitionParserDelegate
 
 用来从Element中获取bean的信息，并且封装到BeanDefinition对象中。
@@ -133,8 +164,10 @@ public AbstractBeanDefinition parseBeanDefinitionElement(
 
 ```java
 public void parseConstructorArgElement(Element ele, BeanDefinition bd) {
+    // 构造参数的下标
    String indexAttr = ele.getAttribute(INDEX_ATTRIBUTE);
    String typeAttr = ele.getAttribute(TYPE_ATTRIBUTE);
+    // 构造参数的名称
    String nameAttr = ele.getAttribute(NAME_ATTRIBUTE);
    if (StringUtils.hasLength(indexAttr)) {
       try {
@@ -187,6 +220,41 @@ public void parseConstructorArgElement(Element ele, BeanDefinition bd) {
       finally {
          this.parseState.pop();
       }
+   }
+}
+```
+
+#### 解析property元素
+
+```java
+/**
+ * Parse a property element.
+ */
+public void parsePropertyElement(Element ele, BeanDefinition bd) {
+    // 属性名称
+   String propertyName = ele.getAttribute(NAME_ATTRIBUTE);
+    // 属性名称是必须设置的
+   if (!StringUtils.hasLength(propertyName)) {
+      error("Tag 'property' must have a 'name' attribute", ele);
+      return;
+   }
+   this.parseState.push(new PropertyEntry(propertyName));
+   try {
+      if (bd.getPropertyValues().contains(propertyName)) {
+         error("Multiple 'property' definitions for property '" + propertyName + "'", ele);
+         return;
+      }
+       // 解析值
+      Object val = parsePropertyValue(ele, bd, propertyName);
+       // PropertyValue封装
+      PropertyValue pv = new PropertyValue(propertyName, val);
+      parseMetaElements(ele, pv);
+      pv.setSource(extractSource(ele));
+       // 添加到PropertyValues中
+      bd.getPropertyValues().addPropertyValue(pv);
+   }
+   finally {
+      this.parseState.pop();
    }
 }
 ```
