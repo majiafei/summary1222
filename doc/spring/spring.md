@@ -764,11 +764,102 @@ public static void registerBeanPostProcessors(
 
 初始化消息源。
 
+支持国际化。
+
+```java
+/**
+ * Initialize the MessageSource.
+ * Use parent's if none defined in this context.
+ */
+protected void initMessageSource() {
+   ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+   if (beanFactory.containsLocalBean(MESSAGE_SOURCE_BEAN_NAME)) {
+      this.messageSource = beanFactory.getBean(MESSAGE_SOURCE_BEAN_NAME, MessageSource.class);
+      // Make MessageSource aware of parent MessageSource.
+      if (this.parent != null && this.messageSource instanceof HierarchicalMessageSource) {
+         HierarchicalMessageSource hms = (HierarchicalMessageSource) this.messageSource;
+         if (hms.getParentMessageSource() == null) {
+            // Only set parent context as parent MessageSource if no parent MessageSource
+            // registered already.
+            hms.setParentMessageSource(getInternalParentMessageSource());
+         }
+      }
+      if (logger.isTraceEnabled()) {
+         logger.trace("Using MessageSource [" + this.messageSource + "]");
+      }
+   }
+   else {
+      // Use empty MessageSource to be able to accept getMessage calls.
+      DelegatingMessageSource dms = new DelegatingMessageSource();
+      dms.setParentMessageSource(getInternalParentMessageSource());
+      this.messageSource = dms;
+      beanFactory.registerSingleton(MESSAGE_SOURCE_BEAN_NAME, this.messageSource);
+      if (logger.isTraceEnabled()) {
+         logger.trace("No '" + MESSAGE_SOURCE_BEAN_NAME + "' bean, using [" + this.messageSource + "]");
+      }
+   }
+}
+```
+
 ### initApplicationEventMulticaster
+
+```java
+protected void initApplicationEventMulticaster() {
+   ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+   if (beanFactory.containsLocalBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME)) {
+      this.applicationEventMulticaster =
+            beanFactory.getBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, ApplicationEventMulticaster.class);
+      if (logger.isTraceEnabled()) {
+         logger.trace("Using ApplicationEventMulticaster [" + this.applicationEventMulticaster + "]");
+      }
+   }
+   else {
+      this.applicationEventMulticaster = new SimpleApplicationEventMulticaster(beanFactory);
+      beanFactory.registerSingleton(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, this.applicationEventMulticaster);
+      if (logger.isTraceEnabled()) {
+         logger.trace("No '" + APPLICATION_EVENT_MULTICASTER_BEAN_NAME + "' bean, using " +
+               "[" + this.applicationEventMulticaster.getClass().getSimpleName() + "]");
+      }
+   }
+}
+```
 
 ### onRefresh
 
+
+
 ### registerListeners
+
+```java
+/**
+ * Add beans that implement ApplicationListener as listeners.
+ * Doesn't affect other listeners, which can be added without being beans.
+ */
+protected void registerListeners() {
+   // Register statically specified listeners first.
+    // 通过硬编码添加的监听器添加到广播器中
+   for (ApplicationListener<?> listener : getApplicationListeners()) {
+      getApplicationEventMulticaster().addApplicationListener(listener);
+   }
+
+   // Do not initialize FactoryBeans here: We need to leave all regular beans
+   // uninitialized to let post-processors apply to them!
+   String[] listenerBeanNames = getBeanNamesForType(ApplicationListener.class, true, false);
+    // 将BeanFactory中的监听器添加到广播器。
+   for (String listenerBeanName : listenerBeanNames) {
+      getApplicationEventMulticaster().addApplicationListenerBean(listenerBeanName);
+   }
+
+   // Publish early application events now that we finally have a multicaster...
+   Set<ApplicationEvent> earlyEventsToProcess = this.earlyApplicationEvents;
+   this.earlyApplicationEvents = null;
+   if (!CollectionUtils.isEmpty(earlyEventsToProcess)) {
+      for (ApplicationEvent earlyEvent : earlyEventsToProcess) {
+         getApplicationEventMulticaster().multicastEvent(earlyEvent);
+      }
+   }
+}
+```
 
 ### finishBeanFactoryInitialization
 
