@@ -863,4 +863,43 @@ protected void registerListeners() {
 
 ### finishBeanFactoryInitialization
 
+#### 获取实例从缓存中
+
+```java
+/**
+ * Return the (raw) singleton object registered under the given name.
+ * <p>Checks already instantiated singletons and also allows for an early
+ * reference to a currently created singleton (resolving a circular reference).
+ * @param beanName the name of the bean to look for
+ * @param allowEarlyReference whether early references should be created or not
+ * @return the registered singleton object, or {@code null} if none found
+ */
+@Nullable
+protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+   // singletonObjects相当于一级缓存，singletonObjects存放的是已经实例化并且初始化好的bean
+   Object singletonObject = this.singletonObjects.get(beanName);
+   // bean正在创建中
+   if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+      // 为什么用锁，可能有另一个线程正在操作singletonObjects和earlySingletonObjects
+      // 比如已经实例化好了，将earlySingletonObjects中的删掉，添加到singletonObjects
+      // 如果不加锁，当另一个线程将earlySingletonObjects删掉了，然后这个线程去获取的时候
+      // 将获取不到，但其实是存在的。
+      synchronized (this.singletonObjects) {
+         // earlySingletonObjects是二级缓存
+         singletonObject = this.earlySingletonObjects.get(beanName);
+         if (singletonObject == null && allowEarlyReference) {
+             // 三级缓存
+            ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
+            if (singletonFactory != null) {
+               singletonObject = singletonFactory.getObject();
+               this.earlySingletonObjects.put(beanName, singletonObject);
+               this.singletonFactories.remove(beanName);
+            }
+         }
+      }
+   }
+   return singletonObject;
+}
+```
+
 ### finishRefresh
