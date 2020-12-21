@@ -863,6 +863,50 @@ protected void registerListeners() {
 
 ### finishBeanFactoryInitialization
 
+#### doGetBean
+
+#### doGetObjectFromFactoryBean(从FactoryBean中实例)
+
+```java
+private Object doGetObjectFromFactoryBean(FactoryBean<?> factory, String beanName) throws BeanCreationException {
+   Object object;
+   try {
+      if (System.getSecurityManager() != null) {
+         AccessControlContext acc = getAccessControlContext();
+         try {
+            object = AccessController.doPrivileged((PrivilegedExceptionAction<Object>) factory::getObject, acc);
+         }
+         catch (PrivilegedActionException pae) {
+            throw pae.getException();
+         }
+      }
+      else {
+         // 直接调用getObject方法获取实例
+         object = factory.getObject();
+      }
+   }
+   catch (FactoryBeanNotInitializedException ex) {
+      throw new BeanCurrentlyInCreationException(beanName, ex.toString());
+   }
+   catch (Throwable ex) {
+      throw new BeanCreationException(beanName, "FactoryBean threw exception on object creation", ex);
+   }
+
+   // Do not accept a null value for a FactoryBean that's not fully
+   // initialized yet: Many FactoryBeans just return null then.
+   // 可能getObject中返回的实例是在初始化方法中被创建的，但是如果当前bean是在创建中，可能还没有执行
+   // 初始化的方法，所以就返回null
+   if (object == null) {
+      if (isSingletonCurrentlyInCreation(beanName)) {
+         throw new BeanCurrentlyInCreationException(
+               beanName, "FactoryBean which is currently in creation returned null from getObject");
+      }
+      object = new NullBean();
+   }
+   return object;
+}
+```
+
 #### 获取实例从缓存中
 
 ```java
@@ -902,4 +946,169 @@ protected Object getSingleton(String beanName, boolean allowEarlyReference) {
 }
 ```
 
+#### 向缓存中添加实例
+
+```java
+protected void addSingleton(String beanName, Object singletonObject) {
+   // singletonObjects put，singletonFactories、earlySingletonObjects remove
+   // getSingleton可能正在获取实例，一个线程正在获取，一个线程正在修改，会造成并发问题。
+   synchronized (this.singletonObjects) {
+      this.singletonObjects.put(beanName, singletonObject);
+      this.singletonFactories.remove(beanName);
+      this.earlySingletonObjects.remove(beanName);
+      this.registeredSingletons.add(beanName);
+   }
+}
+```
+
+#### 创建Bean
+
+
+
 ### finishRefresh
+
+# FactoryBean
+
+既是一个bean，又是一个factory，因为可以创建对象。
+
+## 例子
+
+### 例子一
+
+getObject返回null，那么spring会用NullBean来表示null，最后类型检查的时候，检测到NullBean与User不匹配，抛出异常。
+
+```java
+/**
+ * @author mjf
+ * @since: 2020/12/21 14:40
+ */
+public class UserFactoryBean implements FactoryBean {
+   @Override
+   public Object getObject() throws Exception {
+      return null;
+   }
+
+   @Override
+   public Class<?> getObjectType() {
+      return User.class;
+   }
+}
+```
+
+![image-20201221145254487](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201221145254487.png)
+
+### 例子二
+
+```java
+public class UserFactoryBean implements FactoryBean {
+   @Override
+   public Object getObject() throws Exception {
+      User user = new User();
+      user.setUserName("xiaoming");
+      return user;
+   }
+
+   @Override
+   public Class<?> getObjectType() {
+      return User.class;
+   }
+}
+```
+
+#### 测试
+
+```java
+@Test
+public void testContext() {
+   ApplicationContext ctx = new ClassPathXmlApplicationContext("applicationContext.xml");
+   User bean = ctx.getBean(User.class);
+   System.out.println(bean.getUserName());
+}
+```
+
+结果：
+
+![image-20201221145456598](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201221145456598.png)
+
+### 例子三
+
+通过名称来获取bean。
+
+```java
+@Test
+public void testFactoryBean() {
+   ApplicationContext ctx = new ClassPathXmlApplicationContext("applicationContext.xml");
+   Object user = ctx.getBean("user");
+   if (user instanceof User) {
+      System.out.println(((User) user).getUserName());
+   }
+}
+```
+
+![image-20201221145640039](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201221145640039.png)
+
+### 例子四
+
+在bean名称上加上&，表示的是获取FactoryBean实例。
+
+```java
+@Test
+public void testFactoryBean() {
+   ApplicationContext ctx = new ClassPathXmlApplicationContext("applicationContext.xml");
+   Object user = ctx.getBean("&user");
+   System.out.println(user.getClass());
+}
+```
+
+![image-20201221150011909](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201221150011909.png)
+
+### 例子五
+
+返回代理。多用于接口没有实现类的场景上，比如FeignClient，Mybatis的mapper接口。
+
+```java
+public interface UserService {
+	void add();
+}
+
+public class UserFactoryBean implements FactoryBean {
+
+   @Override
+   public Object getObject() throws Exception {
+      return Proxy.newProxyInstance(this.getClass().getClassLoader(), new Class[]{UserService.class}, new UserProxy());
+   }
+
+   @Override
+   public Class<?> getObjectType() {
+      return UserService.class;
+   }
+
+   //
+   private class UserProxy implements InvocationHandler {
+
+      @Override
+      public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+         // 可以做一些事情
+         System.out.println("============");
+         return null;
+      }
+   }
+}
+```
+
+
+
+#### 测试
+
+```java
+    @Test
+   public void testContext() {
+      ApplicationContext ctx = new ClassPathXmlApplicationContext("applicationContext.xml");
+      UserService bean = ctx.getBean(UserService.class);
+      bean.add();
+//    System.out.println(bean.getUserName());
+   }
+```
+
+![image-20201221154905363](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201221154905363.png)
+
