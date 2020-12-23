@@ -963,7 +963,13 @@ protected void addSingleton(String beanName, Object singletonObject) {
 
 #### 创建Bean
 
+#### 设置属性
 
+##### 将property的值设置到实例中去
+
+
+
+##### 利用@Autowired注解注入bean
 
 ### finishRefresh
 
@@ -1112,3 +1118,47 @@ public class UserFactoryBean implements FactoryBean {
 
 ![image-20201221154905363](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201221154905363.png)
 
+# context命名空间
+
+## 开启注解
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:aop="http://www.springframework.org/schema/aop"
+      xmlns:context="http://www.springframework.org/schema/context"
+      xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://www.springframework.org/schema/aop https://www.springframework.org/schema/aop/spring-aop.xsd
+       http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+    <!--	开启注解-->
+   <context:annotation-config/>
+
+</beans>
+```
+
+## 处理器
+
+![image-20201223151118598](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20201223151118598.png)
+
+```java
+public class ContextNamespaceHandler extends NamespaceHandlerSupport {
+
+   @Override
+   public void init() {
+      registerBeanDefinitionParser("property-placeholder", new PropertyPlaceholderBeanDefinitionParser());
+      registerBeanDefinitionParser("property-override", new PropertyOverrideBeanDefinitionParser());
+      registerBeanDefinitionParser("annotation-config", new AnnotationConfigBeanDefinitionParser());
+      registerBeanDefinitionParser("component-scan", new ComponentScanBeanDefinitionParser());
+      registerBeanDefinitionParser("load-time-weaver", new LoadTimeWeaverBeanDefinitionParser());
+      registerBeanDefinitionParser("spring-configured", new SpringConfiguredBeanDefinitionParser());
+      registerBeanDefinitionParser("mbean-export", new MBeanExportBeanDefinitionParser());
+      registerBeanDefinitionParser("mbean-server", new MBeanServerBeanDefinitionParser());
+   }
+
+}
+```
+
+# 注解
+
+## @Autowired注解
