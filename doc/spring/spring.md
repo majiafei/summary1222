@@ -1162,3 +1162,9 @@ public class ContextNamespaceHandler extends NamespaceHandlerSupport {
 # 注解
 
 ## @Autowired注解
+
+# Aop
+
+## 切面的排序
+
+通过@order注解来对切面进行排序。
