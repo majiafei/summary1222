@@ -965,7 +965,11 @@ protected void addSingleton(String beanName, Object singletonObject) {
 
 #### 设置属性
 
-##### 将property的值设置到实例中去
+##### property元素
+
+##### 值解析器
+
+BeanDefinitionValueResolver将value转换为实际的value，设置到目标实例中。
 
 
 
@@ -1168,3 +1172,53 @@ public class ContextNamespaceHandler extends NamespaceHandlerSupport {
 ## 切面的排序
 
 通过@order注解来对切面进行排序。
+
+```java
+protected List<Advisor> findEligibleAdvisors(Class<?> beanClass, String beanName) {
+   List<Advisor> candidateAdvisors = findCandidateAdvisors();
+   List<Advisor> eligibleAdvisors = findAdvisorsThatCanApply(candidateAdvisors, beanClass, beanName);
+   extendAdvisors(eligibleAdvisors);
+   if (!eligibleAdvisors.isEmpty()) {
+       // 对切面进行排序
+      eligibleAdvisors = sortAdvisors(eligibleAdvisors);
+   }
+   return eligibleAdvisors;
+}
+```
+
+```java
+OrderComparator.class
+    
+private int doCompare(@Nullable Object o1, @Nullable Object o2, @Nullable OrderSourceProvider sourceProvider) {
+   boolean p1 = (o1 instanceof PriorityOrdered);
+   boolean p2 = (o2 instanceof PriorityOrdered);
+   if (p1 && !p2) {
+      return -1;
+   }
+   else if (p2 && !p1) {
+      return 1;
+   }
+
+   int i1 = getOrder(o1, sourceProvider);
+   int i2 = getOrder(o2, sourceProvider);
+   return Integer.compare(i1, i2);
+}
+```
+
+# 表达式解析
+
+例如:在xml配件中可能这样配置：#{xx}
+
+TemplateAwareExpressionParser这个类用来解析表达式的。
+
+# 转换器
+
+## 转换器注册
+
+PropertyEditorRegistrySupport中存储了默认的和自定义的转换器
+
+## 转换器分类
+
+### CustomNumberEditor
+
+数值类型的转换器，比如：Short, Integer, Long，BigInteger, Float, Double, BigDecimal
