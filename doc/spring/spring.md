@@ -971,7 +971,11 @@ protected void addSingleton(String beanName, Object singletonObject) {
 
 BeanDefinitionValueResolver将value转换为实际的value，设置到目标实例中。
 
+```java
+AbstractAutowireCapableBeanFactory.class
 
+protected void applyPropertyValues(String beanName, BeanDefinition mbd, BeanWrapper bw, PropertyValues pvs) {}
+```
 
 ##### 利用@Autowired注解注入bean
 
