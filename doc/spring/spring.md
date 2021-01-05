@@ -1269,6 +1269,13 @@ public class ContextNamespaceHandler extends NamespaceHandlerSupport {
 
 # 注解
 
+## xml开启注解
+
+```xml
+<!--    开启注解-->
+   <context:annotation-config/>
+```
+
 ## @Autowired注解
 
 # Aop
@@ -1326,3 +1333,196 @@ PropertyEditorRegistrySupport中存储了默认的和自定义的转换器
 ### CustomNumberEditor
 
 数值类型的转换器，比如：Short, Integer, Long，BigInteger, Float, Double, BigDecimal
+
+## 自定义转换器
+
+### 方式一（在xml中配置）
+
+CustomEditorConfigurer实现了BeanFactoryPostProcessor，在spring容器启动的时候会执行postProcessBeanFactory这个方法
+
+```xml
+<bean class="org.springframework.beans.factory.config.CustomEditorConfigurer">
+   <property name="customEditors">
+      <map>
+         <entry key="java.util.Date" value="test.mjf.editor.DateEditor"/>
+      </map>
+   </property>
+</bean>
+```
+
+```java
+public class DateEditor implements PropertyEditor {
+
+   private Object value;
+
+   private SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+
+   @Override
+   public void setValue(Object value) {
+      if (value instanceof String) {
+         String s = (String) value;
+         value = DateUtil.parseDatetime(s);
+      }
+   }
+
+   @Override
+   public Object getValue() {
+      return value;
+   }
+
+   @Override
+   public boolean isPaintable() {
+      return false;
+   }
+
+   @Override
+   public void paintValue(Graphics gfx, Rectangle box) {
+
+   }
+
+   @Override
+   public String getJavaInitializationString() {
+      return null;
+   }
+
+   @Override
+   public String getAsText() {
+      return null;
+   }
+
+   @Override
+   public void setAsText(String text) throws IllegalArgumentException {
+      if (text != null) {
+         try {
+            value = sdf.parse(text);
+         } catch (ParseException e) {
+            e.printStackTrace();
+         }
+      }
+   }
+
+   @Override
+   public String[] getTags() {
+      return new String[0];
+   }
+
+   @Override
+   public Component getCustomEditor() {
+      return null;
+   }
+
+   @Override
+   public boolean supportsCustomEditor() {
+      return false;
+   }
+
+   @Override
+   public void addPropertyChangeListener(PropertyChangeListener listener) {
+
+   }
+
+   @Override
+   public void removePropertyChangeListener(PropertyChangeListener listener) {
+
+   }
+}
+```
+
+# 命名空间
+
+## context命名空间
+
+### ContextNamespaceHandler处理器
+
+```java
+@Override
+public void init() {
+   registerBeanDefinitionParser("property-placeholder", new PropertyPlaceholderBeanDefinitionParser());
+   registerBeanDefinitionParser("property-override", new PropertyOverrideBeanDefinitionParser());
+   registerBeanDefinitionParser("annotation-config", new AnnotationConfigBeanDefinitionParser());
+   registerBeanDefinitionParser("component-scan", new ComponentScanBeanDefinitionParser());
+   registerBeanDefinitionParser("load-time-weaver", new LoadTimeWeaverBeanDefinitionParser());
+   registerBeanDefinitionParser("spring-configured", new SpringConfiguredBeanDefinitionParser());
+   registerBeanDefinitionParser("mbean-export", new MBeanExportBeanDefinitionParser());
+   registerBeanDefinitionParser("mbean-server", new MBeanServerBeanDefinitionParser());
+}
+```
+
+### 解析器
+
+#### annotation-config解析器(AnnotationConfigBeanDefinitionParser)
+
+annotation-config是用来开启注解的。
+
+AnnotationConfigBeanDefinitionParser主要是注册了一些与注解有关的后置处理器。
+
+```java
+public static Set<BeanDefinitionHolder> registerAnnotationConfigProcessors(
+      BeanDefinitionRegistry registry, @Nullable Object source) {
+
+   DefaultListableBeanFactory beanFactory = unwrapDefaultListableBeanFactory(registry);
+   if (beanFactory != null) {
+      if (!(beanFactory.getDependencyComparator() instanceof AnnotationAwareOrderComparator)) {
+         beanFactory.setDependencyComparator(AnnotationAwareOrderComparator.INSTANCE);
+      }
+      if (!(beanFactory.getAutowireCandidateResolver() instanceof ContextAnnotationAutowireCandidateResolver)) {
+         beanFactory.setAutowireCandidateResolver(new ContextAnnotationAutowireCandidateResolver());
+      }
+   }
+
+   Set<BeanDefinitionHolder> beanDefs = new LinkedHashSet<>(8);
+
+   // 注册ConfigurationClassPostProcessor(非常重要)
+   if (!registry.containsBeanDefinition(CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(ConfigurationClassPostProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   // 注册AutowiredAnnotationBeanPostProcessor(@Autowired注解)
+   if (!registry.containsBeanDefinition(AUTOWIRED_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(AutowiredAnnotationBeanPostProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, AUTOWIRED_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   // 注册CommonAnnotationBeanPostProcessor
+   if (jsr250Present && !registry.containsBeanDefinition(COMMON_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(CommonAnnotationBeanPostProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, COMMON_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   // 注册PersistenceAnnotationBeanPostProcessor
+   if (jpaPresent && !registry.containsBeanDefinition(PERSISTENCE_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition();
+      try {
+         def.setBeanClass(ClassUtils.forName(PERSISTENCE_ANNOTATION_PROCESSOR_CLASS_NAME,
+               AnnotationConfigUtils.class.getClassLoader()));
+      }
+      catch (ClassNotFoundException ex) {
+         throw new IllegalStateException(
+               "Cannot load optional framework class: " + PERSISTENCE_ANNOTATION_PROCESSOR_CLASS_NAME, ex);
+      }
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, PERSISTENCE_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   // 注册EventListenerMethodProcessor
+   if (!registry.containsBeanDefinition(EVENT_LISTENER_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(EventListenerMethodProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, EVENT_LISTENER_PROCESSOR_BEAN_NAME));
+   }
+
+   // 注册DefaultEventListenerFactory
+   if (!registry.containsBeanDefinition(EVENT_LISTENER_FACTORY_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(DefaultEventListenerFactory.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, EVENT_LISTENER_FACTORY_BEAN_NAME));
+   }
+
+   return beanDefs;
+}
+```
+
