@@ -963,19 +963,119 @@ protected void addSingleton(String beanName, Object singletonObject) {
 
 #### 创建Bean
 
+一般是通过无参的构造函数去创建实例
+
 #### 设置属性
 
 ##### property元素
 
+```java
+protected void applyPropertyValues(String beanName, BeanDefinition mbd, BeanWrapper bw, PropertyValues pvs) {
+   if (pvs.isEmpty()) {
+      return;
+   }
+
+   if (System.getSecurityManager() != null && bw instanceof BeanWrapperImpl) {
+      ((BeanWrapperImpl) bw).setSecurityContext(getAccessControlContext());
+   }
+
+   MutablePropertyValues mpvs = null;
+   List<PropertyValue> original;
+
+   if (pvs instanceof MutablePropertyValues) {
+      mpvs = (MutablePropertyValues) pvs;
+      // 已经转换过了，从原始值===》真实的值
+      if (mpvs.isConverted()) {
+         // Shortcut: use the pre-converted values as-is.
+         try {
+            bw.setPropertyValues(mpvs);
+            return;
+         }
+         catch (BeansException ex) {
+            throw new BeanCreationException(
+                  mbd.getResourceDescription(), beanName, "Error setting property values", ex);
+         }
+      }
+      original = mpvs.getPropertyValueList();
+   }
+   else {
+      original = Arrays.asList(pvs.getPropertyValues());
+   }
+
+   TypeConverter converter = getCustomTypeConverter();
+   if (converter == null) {
+      converter = bw;
+   }
+   BeanDefinitionValueResolver valueResolver = new BeanDefinitionValueResolver(this, beanName, mbd, converter);
+
+   // Create a deep copy, resolving any references for values.
+   List<PropertyValue> deepCopy = new ArrayList<>(original.size());
+   boolean resolveNecessary = false;
+   for (PropertyValue pv : original) {
+      if (pv.isConverted()) {
+         deepCopy.add(pv);
+      }
+      else {
+         // 属性名称
+         String propertyName = pv.getName();
+         // 原始值
+         Object originalValue = pv.getValue();
+         if (originalValue == AutowiredPropertyMarker.INSTANCE) {
+            Method writeMethod = bw.getPropertyDescriptor(propertyName).getWriteMethod();
+            if (writeMethod == null) {
+               throw new IllegalArgumentException("Autowire marker for property without write method: " + pv);
+            }
+            originalValue = new DependencyDescriptor(new MethodParameter(writeMethod, 0), true);
+         }
+         // 解析，比如originalValue可能是一个表达式:#{xxxx}
+         Object resolvedValue = valueResolver.resolveValueIfNecessary(pv, originalValue);
+         Object convertedValue = resolvedValue;
+         boolean convertible = bw.isWritableProperty(propertyName) &&
+               !PropertyAccessorUtils.isNestedOrIndexedProperty(propertyName);
+         if (convertible) {
+            // 转换成真实的值，比如resolvedValue是一个字符串，但是propertyName对应的类型为整形
+            convertedValue = convertForProperty(resolvedValue, propertyName, bw, converter);
+         }
+         // Possibly store converted value in merged bean definition,
+         // in order to avoid re-conversion for every created bean instance.
+         if (resolvedValue == originalValue) {
+            if (convertible) {
+               // 将convertedValue设置进去，避免下次再次转换
+               pv.setConvertedValue(convertedValue);
+            }
+            deepCopy.add(pv);
+         }
+         else if (convertible && originalValue instanceof TypedStringValue &&
+               !((TypedStringValue) originalValue).isDynamic() &&
+               !(convertedValue instanceof Collection || ObjectUtils.isArray(convertedValue))) {
+            pv.setConvertedValue(convertedValue);
+            deepCopy.add(pv);
+         }
+         else {
+            resolveNecessary = true;
+            deepCopy.add(new PropertyValue(pv, convertedValue));
+         }
+      }
+   }
+   if (mpvs != null && !resolveNecessary) {
+      // 设置称已经转换过了，那么下次就无需再次转换
+      mpvs.setConverted();
+   }
+
+   // Set our (possibly massaged) deep copy.
+   try {
+      bw.setPropertyValues(new MutablePropertyValues(deepCopy));
+   }
+   catch (BeansException ex) {
+      throw new BeanCreationException(
+            mbd.getResourceDescription(), beanName, "Error setting property values", ex);
+   }
+}
+```
+
 ##### 值解析器
 
 BeanDefinitionValueResolver将value转换为实际的value，设置到目标实例中。
-
-```java
-AbstractAutowireCapableBeanFactory.class
-
-protected void applyPropertyValues(String beanName, BeanDefinition mbd, BeanWrapper bw, PropertyValues pvs) {}
-```
 
 ##### 利用@Autowired注解注入bean
 
@@ -1215,7 +1315,7 @@ private int doCompare(@Nullable Object o1, @Nullable Object o2, @Nullable OrderS
 
 TemplateAwareExpressionParser这个类用来解析表达式的。
 
-# 转换器
+# 转换器（Convert）
 
 ## 转换器注册
 
