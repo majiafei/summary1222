@@ -1079,9 +1079,26 @@ BeanDefinitionValueResolver将value转换为实际的value，设置到目标实�
 
 ##### 利用@Autowired注解注入bean
 
-##### invokeAwareMethods
+#### invokeAwareMethods(调用aware方法)
 
-
+```java
+private void invokeAwareMethods(String beanName, Object bean) {
+   if (bean instanceof Aware) {
+      if (bean instanceof BeanNameAware) {
+         ((BeanNameAware) bean).setBeanName(beanName);
+      }
+      if (bean instanceof BeanClassLoaderAware) {
+         ClassLoader bcl = getBeanClassLoader();
+         if (bcl != null) {
+            ((BeanClassLoaderAware) bean).setBeanClassLoader(bcl);
+         }
+      }
+      if (bean instanceof BeanFactoryAware) {
+         ((BeanFactoryAware) bean).setBeanFactory(AbstractAutowireCapableBeanFactory.this);
+      }
+   }
+}
+```
 
 ### finishRefresh
 
