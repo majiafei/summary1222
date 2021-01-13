@@ -1079,6 +1079,10 @@ BeanDefinitionValueResolver将value转换为实际的value，设置到目标实�
 
 ##### 利用@Autowired注解注入bean
 
+##### invokeAwareMethods
+
+
+
 ### finishRefresh
 
 # FactoryBean
@@ -1277,6 +1281,134 @@ public class ContextNamespaceHandler extends NamespaceHandlerSupport {
 ```
 
 ## @Autowired注解
+
+AutowiredAnnotationBeanPostProcessor是对Autowired注解的处理。
+
+![image-20210106152747192](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210106152747192.png)
+
+### 封装元数据
+
+```java
+AutowiredAnnotationBeanPostProcessor
+private InjectionMetadata buildAutowiringMetadata(final Class<?> clazz) {
+   if (!AnnotationUtils.isCandidateClass(clazz, this.autowiredAnnotationTypes)) {
+      return InjectionMetadata.EMPTY;
+   }
+
+   List<InjectionMetadata.InjectedElement> elements = new ArrayList<>();
+   Class<?> targetClass = clazz;
+
+   do {
+      final List<InjectionMetadata.InjectedElement> currElements = new ArrayList<>();
+
+      // 循环字段
+      ReflectionUtils.doWithLocalFields(targetClass, field -> {
+         // 字段上面是否有@Autowired、@Value注解
+         MergedAnnotation<?> ann = findAutowiredAnnotation(field);
+         if (ann != null) {
+            // static与对象无关的，可以直接通过 类名.字段名 去设置
+            if (Modifier.isStatic(field.getModifiers())) {
+               if (logger.isInfoEnabled()) {
+                  logger.info("Autowired annotation is not supported on static fields: " + field);
+               }
+               return;
+            }
+            // 判断是否是必须设置的
+            boolean required = determineRequiredStatus(ann);
+            currElements.add(new AutowiredFieldElement(field, required));
+         }
+      });
+
+      // 循环方法，
+      ReflectionUtils.doWithLocalMethods(targetClass, method -> {
+         Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
+         if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
+            return;
+         }
+         MergedAnnotation<?> ann = findAutowiredAnnotation(bridgedMethod);
+         if (ann != null && method.equals(ClassUtils.getMostSpecificMethod(method, clazz))) {
+            if (Modifier.isStatic(method.getModifiers())) {
+               if (logger.isInfoEnabled()) {
+                  logger.info("Autowired annotation is not supported on static methods: " + method);
+               }
+               return;
+            }
+            if (method.getParameterCount() == 0) {
+               if (logger.isInfoEnabled()) {
+                  logger.info("Autowired annotation should only be used on methods with parameters: " +
+                        method);
+               }
+            }
+            boolean required = determineRequiredStatus(ann);
+            PropertyDescriptor pd = BeanUtils.findPropertyForMethod(bridgedMethod, clazz);
+            currElements.add(new AutowiredMethodElement(method, required, pd));
+         }
+      });
+
+      elements.addAll(0, currElements);
+      targetClass = targetClass.getSuperclass();
+   }
+   // 为什么需要循环？可能当前类继承其他的类，父类中也有@Autowird注解
+   while (targetClass != null && targetClass != Object.class);
+
+   return InjectionMetadata.forElements(elements, clazz);
+}
+```
+
+### 注入属性
+
+postProcessProperties方法实现了属性的注入。
+
+```java
+
+protected void inject(Object bean, @Nullable String beanName, @Nullable PropertyValues pvs) throws Throwable {
+   Field field = (Field) this.member;
+   Object value;
+   if (this.cached) {
+      value = resolvedCachedArgument(beanName, this.cachedFieldValue);
+   }
+   else {
+      DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
+      desc.setContainingClass(bean.getClass());
+      Set<String> autowiredBeanNames = new LinkedHashSet<>(1);
+      Assert.state(beanFactory != null, "No BeanFactory available");
+      TypeConverter typeConverter = beanFactory.getTypeConverter();
+      try {
+         // 从beanfactory寻找实例
+         value = beanFactory.resolveDependency(desc, beanName, autowiredBeanNames, typeConverter);
+      }
+      catch (BeansException ex) {
+         throw new UnsatisfiedDependencyException(null, beanName, new InjectionPoint(field), ex);
+      }
+      synchronized (this) {
+         if (!this.cached) {
+            if (value != null || this.required) {
+               this.cachedFieldValue = desc;
+               registerDependentBeans(beanName, autowiredBeanNames);
+               if (autowiredBeanNames.size() == 1) {
+                  String autowiredBeanName = autowiredBeanNames.iterator().next();
+                  if (beanFactory.containsBean(autowiredBeanName) &&
+                        beanFactory.isTypeMatch(autowiredBeanName, field.getType())) {
+                     this.cachedFieldValue = new ShortcutDependencyDescriptor(
+                           desc, autowiredBeanName, field.getType());
+                  }
+               }
+            }
+            else {
+               this.cachedFieldValue = null;
+            }
+            this.cached = true;
+         }
+      }
+   }
+   if (value != null) {
+      // 将修饰符变为可访问的
+      ReflectionUtils.makeAccessible(field);
+      // 设置字段的值
+      field.set(bean, value);
+   }
+}
+```
 
 # Aop
 
@@ -1525,4 +1657,45 @@ public static Set<BeanDefinitionHolder> registerAnnotationConfigProcessors(
    return beanDefs;
 }
 ```
+
+# 桥接方法
+
+安装jclasslib 插件，方便查看字节码。
+
+简单来说，编译器生成`bridge method`的目的就是为了和`jdk1.5`之前的字节码兼容。因为范型是在`jdk1.5`之后才引入的。在`jdk1.5`之前例如集合的操作都是没有范型支持的，所以生成的字节码中参数都是用`Object`接收的，所以也可以往集合中放入任意类型的对象，集合类型的校验也被拖到运行期。
+
+但是在`jdk1.5`之后引入了范型，因此集合的内容校验被提前到了编译期，但是为了兼容`jdk1.5`之前的版本`java`使用了范型擦除，所以如果不生成桥接方法就和`jdk1.5`之前的字节码不兼容了。
+
+上面可以看到在`Parent.class`中，由于范型擦除`class`文件中范型都是由`Object`替代了。所以如果子类中要是不生成`bridge method`那么子类就没有实现接口中的方法，这个`java`语义就不对了（虽然已经生成`class`文件了，不会有编译错误）。
+
+
+
+编写一个例子：
+
+```java
+/**
+ * @author mjf
+ * @since: 2021/01/06 14:56
+ */
+public abstract class Result<T> {
+    public abstract void set(T data);
+}
+
+public class ResponseResult extends Result<String> {
+
+    @Override
+    public void set(String data) {
+        System.out.println(data);
+    }
+
+    public static void main(String[] args) {
+        Result result = new ResponseResult();
+        result.set("xxxxx");
+    }
+}
+```
+
+![image-20210106150213702](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210106150213702.png)
+
+![image-20210106150525543](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210106150525543.png)
 
