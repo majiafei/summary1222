@@ -251,3 +251,22 @@ public static boolean canApply(Pointcut pc, Class<?> targetClass, boolean hasInt
    return false;
 }
 ```
+
+# 构建切面表达式
+
+```java
+AspectJExpressionPointcut.class
+/**
+ * Build the underlying AspectJ pointcut expression.
+ */
+private PointcutExpression buildPointcutExpression(@Nullable ClassLoader classLoader) {
+   PointcutParser parser = initializePointcutParser(classLoader);
+   PointcutParameter[] pointcutParameters = new PointcutParameter[this.pointcutParameterNames.length];
+   for (int i = 0; i < pointcutParameters.length; i++) {
+      pointcutParameters[i] = parser.createPointcutParameter(
+            this.pointcutParameterNames[i], this.pointcutParameterTypes[i]);
+   }
+   return parser.parsePointcutExpression(replaceBooleanOperators(resolveExpression()),
+         this.pointcutDeclarationScope, pointcutParameters);
+}
+```
