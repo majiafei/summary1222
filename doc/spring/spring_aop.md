@@ -580,3 +580,19 @@ public Object invoke(MethodInvocation mi) throws Throwable {
    }
 }
 ```
+
+## AspectJAroundAdvice
+
+```java
+@Override
+public Object invoke(MethodInvocation mi) throws Throwable {
+   if (!(mi instanceof ProxyMethodInvocation)) {
+      throw new IllegalStateException("MethodInvocation is not a Spring ProxyMethodInvocation: " + mi);
+   }
+   ProxyMethodInvocation pmi = (ProxyMethodInvocation) mi;
+   ProceedingJoinPoint pjp = lazyGetProceedingJoinPoint(pmi);
+   JoinPointMatch jpm = getJoinPointMatch(pmi);
+    // 调用around的通知方法
+   return invokeAdviceMethod(pjp, jpm, null, null);
+}
+```
