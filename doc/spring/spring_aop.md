@@ -564,3 +564,19 @@ public Object invoke(MethodInvocation mi) throws Throwable {
    return mi.proceed();
 }
 ```
+
+## AspectJAfterAdvice
+
+```java
+@Override
+public Object invoke(MethodInvocation mi) throws Throwable {
+   try {
+       // 继续执行其他的advice
+      return mi.proceed();
+   }
+   finally {
+       // 在执行after advice
+      invokeAdviceMethod(getJoinPointMatch(), null, null);
+   }
+}
+```
