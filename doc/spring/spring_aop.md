@@ -271,9 +271,14 @@ private PointcutExpression buildPointcutExpression(@Nullable ClassLoader classLo
 }
 ```
 
-# 创建代理
+# 代理
+
+## 创建代理
 
 ```java
+AbstractAutoProxyCreator.class
+    
+    
 /**
  * Create an AOP proxy for the given bean.
  * @param beanClass the class of the bean
@@ -316,11 +321,44 @@ protected Object createProxy(Class<?> beanClass, @Nullable String beanName,
       proxyFactory.setPreFiltered(true);
    }
 
+    // 获取代理
    return proxyFactory.getProxy(getProxyClassLoader());
 }
 ```
 
-## cglib
+## 代理工厂
+
+### ProxyFactory
+
+### DefaultAopProxyFactory
+
+#### 创建aop代理
+
+```java
+@Override
+public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException {
+   if (config.isOptimize() || config.isProxyTargetClass() || hasNoUserSuppliedProxyInterfaces(config)) {
+      // 获取目标类
+      Class<?> targetClass = config.getTargetClass();
+      if (targetClass == null) {
+         throw new AopConfigException("TargetSource cannot determine target class: " +
+               "Either an interface or a target is required for proxy creation.");
+      }
+      // 如果是接口，就用jdk动态代理
+      if (targetClass.isInterface() || Proxy.isProxyClass(targetClass)) {
+         return new JdkDynamicAopProxy(config);
+      }
+      return new ObjenesisCglibAopProxy(config);
+   }
+   else {
+      return new JdkDynamicAopProxy(config);
+   }
+}
+```
+
+## 代理类型
+
+### cglib
 
 ```java
 public Object getProxy(@Nullable ClassLoader classLoader) {
@@ -457,7 +495,20 @@ private Callback[] getCallbacks(Class<?> rootClass) throws Exception {
 }
 ```
 
-## jdk
+### JdkDynamicAopProxy
+
+```java
+@Override
+public Object getProxy(@Nullable ClassLoader classLoader) {
+   if (logger.isTraceEnabled()) {
+      logger.trace("Creating JDK dynamic proxy: " + this.advised.getTargetSource());
+   }
+   Class<?>[] proxiedInterfaces = AopProxyUtils.completeProxiedInterfaces(this.advised, true);
+   findDefinedEqualsAndHashCodeMethods(proxiedInterfaces);
+   // jdk动态代理
+   return Proxy.newProxyInstance(classLoader, proxiedInterfaces, this);
+}
+```
 
 # advice的执行
 
@@ -480,6 +531,7 @@ public Object intercept(Object proxy, Method method, Object[] args, MethodProxy 
       // Get as late as possible to minimize the time we "own" the target, in case it comes from a pool...
       target = targetSource.getTarget();
       Class<?> targetClass = (target != null ? target.getClass() : null);
+       // 作用于method上的advice
       List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
       Object retVal;
       // Check whether we only have one InvokerInterceptor: that is,
@@ -594,5 +646,48 @@ public Object invoke(MethodInvocation mi) throws Throwable {
    JoinPointMatch jpm = getJoinPointMatch(pmi);
     // 调用around的通知方法
    return invokeAdviceMethod(pjp, jpm, null, null);
+}
+```
+
+## 执行顺序
+
+![image-20210202115555764](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210202115555764.png)
+
+```java
+@Aspect
+@Component
+public class UserAspect {
+
+   public UserAspect() {
+      System.out.println();
+   }
+
+   @Pointcut("execution(* test.mjf.service..*.*(..))")
+   public void pointCut(){}
+
+   @After("pointCut()")
+   public void after() {
+      System.out.println("after..............");
+   }
+
+   @Before("pointCut()")
+   public void before() {
+      System.out.println("before..............");
+   }
+
+
+
+   @Around("pointCut()")
+   public void around(ProceedingJoinPoint joinPoint) {
+      System.out.println("around before..............");
+      try {
+          // 执行ReflectiveMethodInvocation的proceed方法，继续执行其他的advice
+         joinPoint.proceed();
+      } catch (Throwable throwable) {
+
+      }
+      System.out.println("around after..............");
+   }
+
 }
 ```
