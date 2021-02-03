@@ -451,3 +451,81 @@ Instance size: 16 bytes
 Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
 
 # 虚拟地址
+
+# synchronized实现原理
+
+## 两个线程交替获取锁，一个线程获取完锁后，另一个线程再获取锁
+
+```java
+@Slf4j
+public class SysnchronizedTest {
+  
+    private static Object lock = new Object();
+
+    private static Thread t2;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(() -> {
+            synchronized (lock) {
+                log.info(ClassLayout.parseInstance(lock).toPrintable());
+            }
+
+            t2.start();
+        });
+
+        t2 = new Thread(() -> {
+            synchronized (lock) {
+                log.info(ClassLayout.parseInstance(lock).toPrintable());
+            }
+        });
+
+        t1.start();
+        t1.join();
+
+        t2.join();
+
+        log.info(ClassLayout.parseInstance(lock).toPrintable());
+    }
+}
+```
+
+打印结果如下：
+
+```
+22:14:43.669 [Thread-0] INFO com.alibaba.mjf.springboot.User - java.lang.Object object internals:
+ OFFSET  SIZE   TYPE DESCRIPTION                               VALUE
+      0     4        (object header)                           05 c8 9a 20 (00000101 11001000 10011010 00100000) (547014661)
+      4     4        (object header)                           00 00 00 00 (00000000 00000000 00000000 00000000) (0)
+      8     4        (object header)                           e5 01 00 f8 (11100101 00000001 00000000 11111000) (-134217243)
+     12     4        (loss due to the next object alignment)
+Instance size: 16 bytes
+Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
+
+22:14:43.669 [Thread-1] INFO com.alibaba.mjf.springboot.User - java.lang.Object object internals:
+ OFFSET  SIZE   TYPE DESCRIPTION                               VALUE
+      0     4        (object header)                           08 f0 1d 21 (00001000 11110000 00011101 00100001) (555610120)
+      4     4        (object header)                           00 00 00 00 (00000000 00000000 00000000 00000000) (0)
+      8     4        (object header)                           e5 01 00 f8 (11100101 00000001 00000000 11111000) (-134217243)
+     12     4        (loss due to the next object alignment)
+Instance size: 16 bytes
+Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
+
+22:14:43.669 [main] INFO com.alibaba.mjf.springboot.User - java.lang.Object object internals:
+ OFFSET  SIZE   TYPE DESCRIPTION                               VALUE
+      0     4        (object header)                           01 00 00 00 (00000001 00000000 00000000 00000000) (1)
+      4     4        (object header)                           00 00 00 00 (00000000 00000000 00000000 00000000) (0)
+      8     4        (object header)                           e5 01 00 f8 (11100101 00000001 00000000 11111000) (-134217243)
+     12     4        (loss due to the next object alignment)
+Instance size: 16 bytes
+Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
+```
+
+![image-20210203221904091](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203221904091.png)
+
+![image-20210203221940481](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203221940481.png)
+
+![image-20210203222019331](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203222019331.png)
+
+## 轻量级加锁
+
+![image-20210203224426353](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203224426353.png)
