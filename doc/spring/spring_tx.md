@@ -157,6 +157,35 @@ protected List<Advisor> findCandidateAdvisors() {
 
 ## TransactionStatus
 
+事务的所有的状态信息
+
+### DefaultTransactionStatus(实现类一)
+
+```java
+/**
+ * 事务对象
+ */
+@Nullable
+private final Object transaction;
+
+/**
+ * 是否是新的事务(connection是新获取的)
+ */
+private final boolean newTransaction;
+
+private final boolean newSynchronization;
+
+private final boolean readOnly;
+
+private final boolean debug;
+
+/**
+ * 挂起资源
+ */
+@Nullable
+private final Object suspendedResources;
+```
+
 ## TransactionDefinition
 
 ## TransactionInfo
@@ -191,6 +220,7 @@ protected List<Advisor> findCandidateAdvisors() {
 	 * 在这种情况下，原始异常将传播到此commit方法的调用方。
 	 */
 public final void commit(TransactionStatus status) throws TransactionException {
+    
    if (status.isCompleted()) {
       throw new IllegalTransactionStateException(
             "Transaction is already completed - do not call commit or rollback more than once per transaction");
@@ -292,6 +322,107 @@ private TransactionStatus startTransaction(TransactionDefinition definition, Obj
 }
 ```
 
+### 处理已经存在的事务
+
+```java
+/**
+ * Create a TransactionStatus for an existing transaction.
+ */
+private TransactionStatus handleExistingTransaction(
+      TransactionDefinition definition, Object transaction, boolean debugEnabled)
+      throws TransactionException {
+
+   // 从不使用事务
+   if (definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_NEVER) {
+      throw new IllegalTransactionStateException(
+            "Existing transaction found for transaction marked with propagation 'never'");
+   }
+
+   // 当前方法不支持事务，将上一个事务挂起
+   if (definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_NOT_SUPPORTED) {
+      if (debugEnabled) {
+         logger.debug("Suspending current transaction");
+      }
+      // connection对象，从当前线程获取的
+      Object suspendedResources = suspend(transaction);
+      boolean newSynchronization = (getTransactionSynchronization() == SYNCHRONIZATION_ALWAYS);
+      return prepareTransactionStatus(
+            definition, null, false, newSynchronization, debugEnabled, suspendedResources);
+   }
+
+   // 新建一个事务，挂起当前的事务
+   if (definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_REQUIRES_NEW) {
+      if (debugEnabled) {
+         logger.debug("Suspending current transaction, creating new transaction with name [" +
+               definition.getName() + "]");
+      }
+      // 挂起事务
+      SuspendedResourcesHolder suspendedResources = suspend(transaction);
+      try {
+         return startTransaction(definition, transaction, debugEnabled, suspendedResources);
+      }
+      catch (RuntimeException | Error beginEx) {
+         resumeAfterBeginException(transaction, suspendedResources, beginEx);
+         throw beginEx;
+      }
+   }
+
+   // 嵌套事务，设置保存点
+   if (definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_NESTED) {
+      if (!isNestedTransactionAllowed()) {
+         throw new NestedTransactionNotSupportedException(
+               "Transaction manager does not allow nested transactions by default - " +
+               "specify 'nestedTransactionAllowed' property with value 'true'");
+      }
+      if (debugEnabled) {
+         logger.debug("Creating nested transaction with name [" + definition.getName() + "]");
+      }
+      if (useSavepointForNestedTransaction()) {
+         // Create savepoint within existing Spring-managed transaction,
+         // through the SavepointManager API implemented by TransactionStatus.
+         // Usually uses JDBC 3.0 savepoints. Never activates Spring synchronization.
+         DefaultTransactionStatus status =
+               prepareTransactionStatus(definition, transaction, false, false, debugEnabled, null);
+         status.createAndHoldSavepoint();
+         return status;
+      }
+      else {
+         // Nested transaction through nested begin and commit/rollback calls.
+         // Usually only for JTA: Spring synchronization might get activated here
+         // in case of a pre-existing JTA transaction.
+         return startTransaction(definition, transaction, debugEnabled, null);
+      }
+   }
+
+   // Assumably PROPAGATION_SUPPORTS or PROPAGATION_REQUIRED.
+   if (debugEnabled) {
+      logger.debug("Participating in existing transaction");
+   }
+   if (isValidateExistingTransaction()) {
+      if (definition.getIsolationLevel() != TransactionDefinition.ISOLATION_DEFAULT) {
+         Integer currentIsolationLevel = TransactionSynchronizationManager.getCurrentTransactionIsolationLevel();
+         if (currentIsolationLevel == null || currentIsolationLevel != definition.getIsolationLevel()) {
+            Constants isoConstants = DefaultTransactionDefinition.constants;
+            throw new IllegalTransactionStateException("Participating transaction with definition [" +
+                  definition + "] specifies isolation level which is incompatible with existing transaction: " +
+                  (currentIsolationLevel != null ?
+                        isoConstants.toCode(currentIsolationLevel, DefaultTransactionDefinition.PREFIX_ISOLATION) :
+                        "(unknown)"));
+         }
+      }
+      if (!definition.isReadOnly()) {
+         if (TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+            throw new IllegalTransactionStateException("Participating transaction with definition [" +
+                  definition + "] is not marked as read-only but existing transaction is");
+         }
+      }
+   }
+   boolean newSynchronization = (getTransactionSynchronization() != SYNCHRONIZATION_NEVER);
+   // required类型的传播特性，和之前存在的事务是同一个事务，即使用的是同一个connection
+   return prepareTransactionStatus(definition, transaction, false, newSynchronization, debugEnabled, null);
+}
+```
+
 ## DataSourceTransactionManager
 
 ### 获取事务
@@ -318,7 +449,135 @@ protected boolean isExistingTransaction(Object transaction) {
 }
 ```
 
+### 开启事务
 
+```java
+protected void doBegin(Object transaction, TransactionDefinition definition) {
+   DataSourceTransactionObject txObject = (DataSourceTransactionObject) transaction;
+   Connection con = null;
+
+   try {
+      // 没有connection对象或者事务没有被激活
+      if (!txObject.hasConnectionHolder() ||
+            txObject.getConnectionHolder().isSynchronizedWithTransaction()) {
+         // 获取connection从数据源中
+         Connection newCon = obtainDataSource().getConnection();
+         if (logger.isDebugEnabled()) {
+            logger.debug("Acquired Connection [" + newCon + "] for JDBC transaction");
+         }
+         // ConnectionHolder封装Connection
+         txObject.setConnectionHolder(new ConnectionHolder(newCon), true);
+      }
+
+      txObject.getConnectionHolder().setSynchronizedWithTransaction(true);
+      con = txObject.getConnectionHolder().getConnection();
+
+      // 隔离级别
+      Integer previousIsolationLevel = DataSourceUtils.prepareConnectionForTransaction(con, definition);
+      txObject.setPreviousIsolationLevel(previousIsolationLevel);
+      txObject.setReadOnly(definition.isReadOnly());
+
+      // Switch to manual commit if necessary. This is very expensive in some JDBC drivers,
+      // so we don't want to do it unnecessarily (for example if we've explicitly
+      // configured the connection pool to set it already).
+      if (con.getAutoCommit()) {
+         txObject.setMustRestoreAutoCommit(true);
+         if (logger.isDebugEnabled()) {
+            logger.debug("Switching JDBC Connection [" + con + "] to manual commit");
+         }
+          
+          
+          
+          
+         // 将事务设置为非自动提交****************
+         con.setAutoCommit(false);
+      }
+
+      prepareTransactionalConnection(con, definition);
+      // 将事务激活
+      txObject.getConnectionHolder().setTransactionActive(true);
+
+      // 超时时间
+      int timeout = determineTimeout(definition);
+      if (timeout != TransactionDefinition.TIMEOUT_DEFAULT) {
+         txObject.getConnectionHolder().setTimeoutInSeconds(timeout);
+      }
+
+      // Bind the connection holder to the thread.
+      // 将connection绑定到当前线程，ThreadLocal的value是一个map，key为数据源，value为connection
+      // 因为一个项目中可能存在多个数据源
+      if (txObject.isNewConnectionHolder()) {
+         TransactionSynchronizationManager.bindResource(obtainDataSource(), txObject.getConnectionHolder());
+      }
+   }
+
+   catch (Throwable ex) {
+      if (txObject.isNewConnectionHolder()) {
+         DataSourceUtils.releaseConnection(con, obtainDataSource());
+         txObject.setConnectionHolder(null, false);
+      }
+      throw new CannotCreateTransactionException("Could not open JDBC Connection for transaction", ex);
+   }
+}
+```
+
+### 提交事务
+
+```java
+@Override
+protected void doCommit(DefaultTransactionStatus status) {
+   DataSourceTransactionObject txObject = (DataSourceTransactionObject) status.getTransaction();
+   Connection con = txObject.getConnectionHolder().getConnection();
+   if (status.isDebug()) {
+      logger.debug("Committing JDBC transaction on Connection [" + con + "]");
+   }
+   try {
+      con.commit();
+   }
+   catch (SQLException ex) {
+      throw new TransactionSystemException("Could not commit JDBC transaction", ex);
+   }
+}
+```
+
+### 清除事务信息
+
+```java
+	@Override
+	protected void doCleanupAfterCompletion(Object transaction) {
+		DataSourceTransactionObject txObject = (DataSourceTransactionObject) transaction;
+
+		// Remove the connection holder from the thread, if exposed.
+		if (txObject.isNewConnectionHolder()) {
+			// 将事务与当前事务解绑
+			TransactionSynchronizationManager.unbindResource(obtainDataSource());
+		}
+
+		// Reset connection.
+		Connection con = txObject.getConnectionHolder().getConnection();
+		try {
+			if (txObject.isMustRestoreAutoCommit()) {
+				// 设置为自动提交，在开启事务的事务设置为false，事务完成之后恢复
+				con.setAutoCommit(true);
+			}
+			DataSourceUtils.resetConnectionAfterTransaction(
+					con, txObject.getPreviousIsolationLevel(), txObject.isReadOnly());
+		}
+		catch (Throwable ex) {
+			logger.debug("Could not reset JDBC Connection after transaction", ex);
+		}
+
+		if (txObject.isNewConnectionHolder()) {
+			if (logger.isDebugEnabled()) {
+				logger.debug("Releasing JDBC Connection [" + con + "] after transaction");
+			}
+			// 释放连接
+			DataSourceUtils.releaseConnection(con, this.dataSource);
+		}
+
+		txObject.getConnectionHolder().clear();
+	}
+```
 
 # 事务切面
 
@@ -331,6 +590,146 @@ protected boolean isExistingTransaction(Object transaction) {
 ![image-20210203114147042](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203114147042.png)
 
 ## createTransactionIfNecessary
+
+```java
+/**
+ * General delegate for around-advice-based subclasses, delegating to several other template
+ * methods on this class. Able to handle {@link CallbackPreferringPlatformTransactionManager}
+ * as well as regular {@link PlatformTransactionManager} implementations and
+ * {@link ReactiveTransactionManager} implementations for reactive return types.
+ * @param method the Method being invoked
+ * @param targetClass the target class that we're invoking the method on
+ * @param invocation the callback to use for proceeding with the target invocation
+ * @return the return value of the method, if any
+ * @throws Throwable propagated from the target invocation
+ */
+@Nullable
+protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass,
+      final InvocationCallback invocation) throws Throwable {
+
+   // If the transaction attribute is null, the method is non-transactional.
+   TransactionAttributeSource tas = getTransactionAttributeSource();
+   final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+   // 获取事务管理器
+   final TransactionManager tm = determineTransactionManager(txAttr);
+
+   if (this.reactiveAdapterRegistry != null && tm instanceof ReactiveTransactionManager) {
+      ReactiveTransactionSupport txSupport = this.transactionSupportCache.computeIfAbsent(method, key -> {
+         if (KotlinDetector.isKotlinType(method.getDeclaringClass()) && KotlinDelegate.isSuspend(method)) {
+            throw new TransactionUsageException(
+                  "Unsupported annotated transaction on suspending function detected: " + method +
+                  ". Use TransactionalOperator.transactional extensions instead.");
+         }
+         ReactiveAdapter adapter = this.reactiveAdapterRegistry.getAdapter(method.getReturnType());
+         if (adapter == null) {
+            throw new IllegalStateException("Cannot apply reactive transaction to non-reactive return type: " +
+                  method.getReturnType());
+         }
+         return new ReactiveTransactionSupport(adapter);
+      });
+      return txSupport.invokeWithinTransaction(
+            method, targetClass, invocation, txAttr, (ReactiveTransactionManager) tm);
+   }
+
+   PlatformTransactionManager ptm = asPlatformTransactionManager(tm);
+   final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
+
+   if (txAttr == null || !(ptm instanceof CallbackPreferringPlatformTransactionManager)) {
+      // Standard transaction demarcation with getTransaction and commit/rollback calls.
+      TransactionInfo txInfo = createTransactionIfNecessary(ptm, txAttr, joinpointIdentification);
+
+      Object retVal;
+      try {
+         // This is an around advice: Invoke the next interceptor in the chain.
+         // This will normally result in a target object being invoked.
+         // 这是一个环绕通知:接下来去调用下一个intercept
+         retVal = invocation.proceedWithInvocation();
+      }
+      catch (Throwable ex) {
+         // 抛出异常后完成事务(可能回滚或者提交)
+         completeTransactionAfterThrowing(txInfo, ex);
+         throw ex;
+      }
+      finally {
+         // 清除事务
+         cleanupTransactionInfo(txInfo);
+      }
+
+      if (retVal != null && vavrPresent && VavrDelegate.isVavrTry(retVal)) {
+         // Set rollback-only in case of Vavr failure matching our rollback rules...
+         TransactionStatus status = txInfo.getTransactionStatus();
+         if (status != null && txAttr != null) {
+            retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
+         }
+      }
+
+      // 提交事务
+      commitTransactionAfterReturning(txInfo);
+      return retVal;
+   }
+
+   else {
+      Object result;
+      final ThrowableHolder throwableHolder = new ThrowableHolder();
+
+      // It's a CallbackPreferringPlatformTransactionManager: pass a TransactionCallback in.
+      try {
+         result = ((CallbackPreferringPlatformTransactionManager) ptm).execute(txAttr, status -> {
+            TransactionInfo txInfo = prepareTransactionInfo(ptm, txAttr, joinpointIdentification, status);
+            try {
+               Object retVal = invocation.proceedWithInvocation();
+               if (retVal != null && vavrPresent && VavrDelegate.isVavrTry(retVal)) {
+                  // Set rollback-only in case of Vavr failure matching our rollback rules...
+                  retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
+               }
+               return retVal;
+            }
+            catch (Throwable ex) {
+               if (txAttr.rollbackOn(ex)) {
+                  // A RuntimeException: will lead to a rollback.
+                  if (ex instanceof RuntimeException) {
+                     throw (RuntimeException) ex;
+                  }
+                  else {
+                     throw new ThrowableHolderException(ex);
+                  }
+               }
+               else {
+                  // A normal return value: will lead to a commit.
+                  throwableHolder.throwable = ex;
+                  return null;
+               }
+            }
+            finally {
+               cleanupTransactionInfo(txInfo);
+            }
+         });
+      }
+      catch (ThrowableHolderException ex) {
+         throw ex.getCause();
+      }
+      catch (TransactionSystemException ex2) {
+         if (throwableHolder.throwable != null) {
+            logger.error("Application exception overridden by commit exception", throwableHolder.throwable);
+            ex2.initApplicationException(throwableHolder.throwable);
+         }
+         throw ex2;
+      }
+      catch (Throwable ex2) {
+         if (throwableHolder.throwable != null) {
+            logger.error("Application exception overridden by commit exception", throwableHolder.throwable);
+         }
+         throw ex2;
+      }
+
+      // Check result state: It might indicate a Throwable to rethrow.
+      if (throwableHolder.throwable != null) {
+         throw throwableHolder.throwable;
+      }
+      return result;
+   }
+}
+```
 
 
 
@@ -346,6 +745,10 @@ protected boolean isExistingTransaction(Object transaction) {
 
 ## PROPAGATION_MANDATORY
 
+## PROPAGATION_NEVER
+
+## PROPAGATION_NOT_SUPPORTED
+
 # 隔离级别
 
 ## Read Uncommitted
@@ -354,7 +757,86 @@ protected boolean isExistingTransaction(Object transaction) {
 
 ## Repeatable Read（可重读）
 
-## Serializable（可串行化
+## Serializable（可串行化)
+
+# 方法嵌套
+
+## 方法A的传播特性为required，方法B的传播特性为never
+
+```java
+@Transactional(rollbackFor = Exception.class)
+@Override
+public void addOrder(Order order) {
+   orderMapper.addOrder(order);
+
+    // 事务的传播特性为never
+   storeService.decrease(order.getCommodityCode(), order.getCount());
+
+   throw new InvalidDataAccessApiUsageException("xxx");
+}
+
+
+方法B
+@Transactional(propagation = Propagation.NEVER)
+@Override
+public void decrease(String commodityCode, Integer num) {
+    storeMapper.decrease(commodityCode, num);
+}
+```
+
+结果：
+
+![image-20210203193512524](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203193512524.png)
+
+## 方法A的传播特性为required，方法B的传播特性为required
+
+
+
+执行之前数据库的记录：
+
+![image-20210203193639830](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203193639830.png)
+
+![image-20210203193652429](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203193652429.png)
+
+方法成功执行之后数据库中的记录：
+
+![image-20210203193824028](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203193824028.png)
+
+![image-20210203193840623](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203193840623.png)
+
+代码如下：
+
+```java
+@Transactional(rollbackFor = Exception.class)-------
+@Override
+public void addOrder(Order order) {
+   orderMapper.addOrder(order);
+
+   storeService.decrease(order.getCommodityCode(), order.getCount());
+}
+
+	@Transactional(propagation = Propagation.REQUIRED)--------------------
+	@Override
+	public void decrease(String commodityCode, Integer num) {
+		storeMapper.decrease(commodityCode, num);
+	}
+```
+
+
+
+
+
+给addOrder方法抛出一个异常
+
+![image-20210203194110921](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203194110921.png)
+
+
+
+数据库中的记录：
+
+![image-20210203194133900](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203194133900.png)
+
+![image-20210203194147217](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203194147217.png)
 
 
 
@@ -363,4 +845,6 @@ protected boolean isExistingTransaction(Object transaction) {
 1、如果定义了多个切面，一定要注意，是否有的通知把异常给捕获了，但是并没有抛出，那么这时候事务就不会生效
 
 2、如果要使事务生效，捕获异常之后，一定要抛出，事务回滚是根据异常来回滚的，spring事务捕获到异常之后才会回滚。
+
+3、一个方法调用同类的其它方法，被调用的其它方法的事务注解不起作用。
 
