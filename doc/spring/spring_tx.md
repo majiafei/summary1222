@@ -981,7 +981,121 @@ public void addOrder(Order order) {
 
 ![image-20210203194147217](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210203194147217.png)
 
+## 方法A的传播特性为required，方法B的传播特性为required_new
 
+```java
+@Transactional(rollbackFor = Exception.class)
+@Override
+public void addOrder(Order order) {
+   orderMapper.addOrder(order);
+
+   storeService.decrease(order.getCommodityCode(), order.getCount());
+   throw new InvalidDataAccessApiUsageException("xxx");
+}
+
+
+	@Transactional(propagation = Propagation.REQUIRES_NEW)
+	@Override
+	public void decrease(String commodityCode, Integer num) {
+		storeMapper.decrease(commodityCode, num);
+	}
+```
+
+addOrder方法和decrease方法属于不同的事务，当addOrder方法抛出异常的时候，decrease方法是不会回滚的，decrease方法执行完之后，事务就已经提交了，所以只会回滚addOrder方法，decrease不会回滚，这就导致没有生成订单数据，但是库存却减少了。
+
+
+
+执行之前：
+
+![image-20210204100810494](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204100810494.png)
+
+
+
+![image-20210204101939424](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204101939424.png)
+
+
+
+
+
+执行后：
+
+![image-20210204102012817](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204102012817.png)
+
+![image-20210204102023586](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204102023586.png)
+
+## 方法A的传播特性为required，方法B的传播特性为NOT_SUPPORTED
+
+```java
+@Transactional(rollbackFor = Exception.class)
+@Override
+public void addOrder(Order order) {
+   orderMapper.addOrder(order);
+
+   storeService.decrease(order.getCommodityCode(), order.getCount());
+}
+
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
+	@Override
+	public void decrease(String commodityCode, Integer num) {
+		storeMapper.decrease(commodityCode, num);
+		throw new RuntimeException();
+	}
+```
+
+addOrder方法有事务，decrease方法没有事务，事务是自动提交的，库存已经修改完事务就提交了，即便后面出现了异常也不会回滚。
+
+在decrease会将异常抛到addOrder方法，所以addOrder会回滚事务。
+
+执行完之后数据库记录如下：
+
+![image-20210204103346144](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204103346144.png)
+
+![image-20210204103408286](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204103408286.png)
+
+
+
+## 方法A的传播特性为required，方法B的传播特性为NESTED
+
+```java
+@Transactional(rollbackFor = Exception.class)
+@Override
+public void addOrder(Order order) {
+   orderMapper.addOrder(order);
+   try {
+      storeService.decrease(order.getCommodityCode(), order.getCount());
+   } catch (Exception e) {
+      e.printStackTrace();
+   }
+}
+
+	@Transactional(propagation = Propagation.NESTED)
+	@Override
+	public void decrease(String commodityCode, Integer num) {
+		storeMapper.decrease(commodityCode, num);
+		throw new RuntimeException("store is empty");
+	}
+```
+
+addOrder和decrease属于同一个事务，只不过decrease属于子事务，主事务提交子事务才能提交，当子事务出现异常时会回滚到保存点，主事务提交的时候会将保存点以前的操作进行提交。注意：要将子事务cache一下，否则，主事务也会全部回滚。
+
+![image-20210204105353986](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204105353986.png)
+
+![image-20210204105410532](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204105410532.png)
+
+## 方法A的传播特性传播特性为MANDATORY
+
+```java
+@Transactional(propagation = Propagation.MANDATORY)
+@Override
+public void addOrder(Order order) {
+   orderMapper.addOrder(order);
+   storeService.decrease(order.getCommodityCode(), order.getCount());
+}
+```
+
+MANDATORY表示当前必须存在事务，如果没有事务就报错。
+
+![image-20210204111320137](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204111320137.png)
 
 # 注意
 
@@ -990,4 +1104,8 @@ public void addOrder(Order order) {
 2、如果要使事务生效，捕获异常之后，一定要抛出，事务回滚是根据异常来回滚的，spring事务捕获到异常之后才会回滚。
 
 3、一个方法调用同类的其它方法，被调用的其它方法的事务注解不起作用。
+
+4、注意抛出的异常，默认RuntimeException的异常会回滚。
+
+![image-20210204100137045](C:\Users\ZH1476\AppData\Roaming\Typora\typora-user-images\image-20210204100137045.png)
 
