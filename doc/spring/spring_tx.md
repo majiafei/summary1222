@@ -423,6 +423,99 @@ private TransactionStatus handleExistingTransaction(
 }
 ```
 
+### 回滚
+
+```java
+/**
+ * This implementation of rollback handles participating in existing
+ * transactions. Delegates to {@code doRollback} and
+ * {@code doSetRollbackOnly}.
+ * @see #doRollback
+ * @see #doSetRollbackOnly
+ */
+@Override
+public final void rollback(TransactionStatus status) throws TransactionException {
+    // 事务之后，不允许再次回滚
+   if (status.isCompleted()) {
+      throw new IllegalTransactionStateException(
+            "Transaction is already completed - do not call commit or rollback more than once per transaction");
+   }
+
+   DefaultTransactionStatus defStatus = (DefaultTransactionStatus) status;
+   processRollback(defStatus, false);
+}
+
+/**
+ * Process an actual rollback.
+ * The completed flag has already been checked.
+ * @param status object representing the transaction
+ * @throws TransactionException in case of rollback failure
+ */
+private void processRollback(DefaultTransactionStatus status, boolean unexpected) {
+   try {
+      boolean unexpectedRollback = unexpected;
+
+      try {
+         triggerBeforeCompletion(status);
+
+         if (status.hasSavepoint()) {
+            if (status.isDebug()) {
+               logger.debug("Rolling back transaction to savepoint");
+            }
+            // 回滚到保存点的位置
+            status.rollbackToHeldSavepoint();
+         }
+         else if (status.isNewTransaction()) {
+            if (status.isDebug()) {
+               logger.debug("Initiating transaction rollback");
+            }
+            // 直接回滚
+            doRollback(status);
+         }
+         else {
+            // Participating in larger transaction
+            if (status.hasTransaction()) {
+               if (status.isLocalRollbackOnly() || isGlobalRollbackOnParticipationFailure()) {
+                  if (status.isDebug()) {
+                     logger.debug("Participating transaction failed - marking existing transaction as rollback-only");
+                  }
+                  doSetRollbackOnly(status);
+               }
+               else {
+                   // 没有事务
+                  if (status.isDebug()) {
+                     logger.debug("Participating transaction failed - letting transaction originator decide on rollback");
+                  }
+               }
+            }
+            else {
+               logger.debug("Should roll back transaction but cannot - no transaction available");
+            }
+            // Unexpected rollback only matters here if we're asked to fail early
+            if (!isFailEarlyOnGlobalRollbackOnly()) {
+               unexpectedRollback = false;
+            }
+         }
+      }
+      catch (RuntimeException | Error ex) {
+         triggerAfterCompletion(status, TransactionSynchronization.STATUS_UNKNOWN);
+         throw ex;
+      }
+
+      triggerAfterCompletion(status, TransactionSynchronization.STATUS_ROLLED_BACK);
+
+      // Raise UnexpectedRollbackException if we had a global rollback-only marker
+      if (unexpectedRollback) {
+         throw new UnexpectedRollbackException(
+               "Transaction rolled back because it has been marked as rollback-only");
+      }
+   }
+   finally {
+      cleanupAfterCompletion(status);
+   }
+}
+```
+
 ## DataSourceTransactionManager
 
 ### 获取事务
@@ -731,7 +824,57 @@ protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targe
 }
 ```
 
+## 抛出异常后完成事务
 
+```java
+/**
+ * Handle a throwable, completing the transaction.
+ * We may commit or roll back, depending on the configuration.
+ * @param txInfo information about the current transaction
+ * @param ex throwable encountered
+ */
+protected void completeTransactionAfterThrowing(@Nullable TransactionInfo txInfo, Throwable ex) {
+   if (txInfo != null && txInfo.getTransactionStatus() != null) {
+      if (logger.isTraceEnabled()) {
+         logger.trace("Completing transaction for [" + txInfo.getJoinpointIdentification() +
+               "] after exception: " + ex);
+      }
+      // ex必须属于事务注解中设置的回滚异常类型或者是error异常
+      if (txInfo.transactionAttribute != null && txInfo.transactionAttribute.rollbackOn(ex)) {
+         try {
+            // 调用事务管理器的回滚
+            txInfo.getTransactionManager().rollback(txInfo.getTransactionStatus());
+         }
+         catch (TransactionSystemException ex2) {
+            logger.error("Application exception overridden by rollback exception", ex);
+            ex2.initApplicationException(ex);
+            throw ex2;
+         }
+         catch (RuntimeException | Error ex2) {
+            logger.error("Application exception overridden by rollback exception", ex);
+            throw ex2;
+         }
+      }
+      else {
+         // We don't roll back on this exception.
+         // Will still roll back if TransactionStatus.isRollbackOnly() is true.
+         // 不满足条件的异常就要提交提交事务
+         try {
+            txInfo.getTransactionManager().commit(txInfo.getTransactionStatus());
+         }
+         catch (TransactionSystemException ex2) {
+            logger.error("Application exception overridden by commit exception", ex);
+            ex2.initApplicationException(ex);
+            throw ex2;
+         }
+         catch (RuntimeException | Error ex2) {
+            logger.error("Application exception overridden by commit exception", ex);
+            throw ex2;
+         }
+      }
+   }
+}
+```
 
 # 事务传播特性
 
