@@ -91,6 +91,18 @@ protected void detectHandlerMethods(Object handler) {
 
 AbstractHandlerMethodMapping的内部类，用来注册url到Handler的映射信息的。
 
+```java
+private final Map<T, MappingRegistration<T>> registry = new HashMap<>();
+// RequestMappingInfo到HandlerMethod之间的映射,LinkedHashMap是有顺序的
+private final Map<T, HandlerMethod> mappingLookup = new LinkedHashMap<>();
+// 从url到RequestMappingInfo之间的映射
+private final MultiValueMap<String, T> urlLookup = new LinkedMultiValueMap<>();
+// 并发安全的map
+private final Map<String, List<HandlerMethod>> nameLookup = new ConcurrentHashMap<>();
+
+private final Map<HandlerMethod, CorsConfiguration> corsLookup = new ConcurrentHashMap<>();
+```
+
 ## HandlerMethod
 
 
@@ -125,7 +137,7 @@ public Annotation[] getParameterAnnotations() {
 
 # 处理@ResponseBody注解
 
-# 寻找handler
+# HandlerMapping
 
 # HandlerAdapter
 
@@ -560,3 +572,24 @@ public class MyRequestBodyAdvice implements RequestBodyAdvice {
 
 # 响应的时候在将内容写入response之前对返回值进行处理
 
+# 设计模式
+
+## 构造器模式
+
+RequestMappingInfo.Builder
+
+# Url工具类
+
+## UrlPathHelp
+
+## UriUtils
+
+### 解密
+
+```java
+public static String decode(String source, String encoding) {
+   return StringUtils.uriDecode(source, Charset.forName(encoding));
+}
+```
+
+## AntPathMatcher
