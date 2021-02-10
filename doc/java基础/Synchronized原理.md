@@ -529,3 +529,247 @@ Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
 ## 轻量级加锁
 
 ![image-20210203224426353](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203224426353.png)
+
+## 去掉偏向延迟的jvm参数，即打开偏向延迟，延迟时间大概为4s，睡眠超过4s，那么锁状态为可偏向的
+
+```java
+public static void main(String[] args) throws InterruptedException {
+    Thread.sleep(6000);
+    // 不能用static变量，因为static在类加载的时候就已经初始化好了,对象头已经创建好了，而且偏向状态为不可偏向状态，
+    // 因为没有禁止偏向延迟
+    Object o = new Object();
+
+    new Thread(() -> {
+        synchronized (o) {
+            log.info(ClassLayout.parseInstance(o).toPrintable());
+        }
+    }).start();
+
+}
+```
+
+![image-20210209225850053](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210209225850053.png)
+
+## 重量级锁
+
+hotspot源码在以下几个文件中：
+
+### objectMonitor.cpp
+
+![image-20210209231709023](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210209231709023.png)
+
+```c++
+void ObjectMonitor::enter(TRAPS) {
+  // The following code is ordered to check the most common cases first
+  // and to reduce RTS->RTO cache line upgrades on SPARC and IA32 processors.
+  Thread * const Self = THREAD;
+
+    // 当前锁的线程是否为null，将&_owner之前的值返回
+  void * cur = Atomic::cmpxchg(Self, &_owner, (void*)NULL);
+  if (cur == NULL) {
+    // Either ASSERT _recursions == 0 or explicitly set _recursions = 0.
+    assert(_recursions == 0, "invariant");
+    assert(_owner == Self, "invariant");
+    return;
+  }
+
+    // 重入
+  if (cur == Self) {
+    // TODO-FIXME: check for integer overflow!  BUGID 6557169.
+      // 持有锁的次数加1
+    _recursions++;
+    return;
+  }
+
+  if (Self->is_lock_owned ((address)cur)) {
+    assert(_recursions == 0, "internal state error");
+    _recursions = 1;
+    // Commute owner from a thread-specific on-stack BasicLockObject address to
+    // a full-fledged "Thread *".
+    _owner = Self;
+    return;
+  }
+
+  // We've encountered genuine contention.
+  assert(Self->_Stalled == 0, "invariant");
+  Self->_Stalled = intptr_t(this);
+
+  // Try one round of spinning *before* enqueueing Self
+  // and before going through the awkward and expensive state
+  // transitions.  The following spin is strictly optional ...
+  // Note that if we acquire the monitor from an initial spin
+  // we forgo posting JVMTI events and firing DTRACE probes.
+  if (TrySpin(Self) > 0) {
+    assert(_owner == Self, "invariant");
+    assert(_recursions == 0, "invariant");
+    assert(((oop)(object()))->mark() == markOopDesc::encode(this), "invariant");
+    Self->_Stalled = 0;
+    return;
+  }
+
+  assert(_owner != Self, "invariant");
+  assert(_succ != Self, "invariant");
+  assert(Self->is_Java_thread(), "invariant");
+  JavaThread * jt = (JavaThread *) Self;
+  assert(!SafepointSynchronize::is_at_safepoint(), "invariant");
+  assert(jt->thread_state() != _thread_blocked, "invariant");
+  assert(this->object() != NULL, "invariant");
+  assert(_count >= 0, "invariant");
+
+  // Prevent deflation at STW-time.  See deflate_idle_monitors() and is_busy().
+  // Ensure the object-monitor relationship remains stable while there's contention.
+  Atomic::inc(&_count);
+
+  JFR_ONLY(JfrConditionalFlushWithStacktrace<EventJavaMonitorEnter> flush(jt);)
+  EventJavaMonitorEnter event;
+  if (event.should_commit()) {
+    event.set_monitorClass(((oop)this->object())->klass());
+    event.set_address((uintptr_t)(this->object_addr()));
+  }
+
+  { // Change java thread status to indicate blocked on monitor enter.
+    JavaThreadBlockedOnMonitorEnterState jtbmes(jt, this);
+
+    Self->set_current_pending_monitor(this);
+
+    DTRACE_MONITOR_PROBE(contended__enter, this, object(), jt);
+    if (JvmtiExport::should_post_monitor_contended_enter()) {
+      JvmtiExport::post_monitor_contended_enter(jt, this);
+
+      // The current thread does not yet own the monitor and does not
+      // yet appear on any queues that would get it made the successor.
+      // This means that the JVMTI_EVENT_MONITOR_CONTENDED_ENTER event
+      // handler cannot accidentally consume an unpark() meant for the
+      // ParkEvent associated with this ObjectMonitor.
+    }
+
+    OSThreadContendState osts(Self->osthread());
+    ThreadBlockInVM tbivm(jt);
+
+    // TODO-FIXME: change the following for(;;) loop to straight-line code.
+      // 自旋
+    for (;;) {
+      jt->set_suspend_equivalent();
+      // cleared by handle_special_suspend_equivalent_condition()
+      // or java_suspend_self()
+
+      EnterI(THREAD);
+
+      if (!ExitSuspendEquivalent(jt)) break;
+
+      // We have acquired the contended monitor, but while we were
+      // waiting another thread suspended us. We don't want to enter
+      // the monitor while suspended because that would surprise the
+      // thread that suspended us.
+      //
+      _recursions = 0;
+      _succ = NULL;
+      exit(false, Self);
+
+      jt->java_suspend_self();
+    }
+    Self->set_current_pending_monitor(NULL);
+
+    // We cleared the pending monitor info since we've just gotten past
+    // the enter-check-for-suspend dance and we now own the monitor free
+    // and clear, i.e., it is no longer pending. The ThreadBlockInVM
+    // destructor can go to a safepoint at the end of this block. If we
+    // do a thread dump during that safepoint, then this thread will show
+    // as having "-locked" the monitor, but the OS and java.lang.Thread
+    // states will still report that the thread is blocked trying to
+    // acquire it.
+  }
+
+  Atomic::dec(&_count);
+  assert(_count >= 0, "invariant");
+  Self->_Stalled = 0;
+
+  // Must either set _recursions = 0 or ASSERT _recursions == 0.
+  assert(_recursions == 0, "invariant");
+  assert(_owner == Self, "invariant");
+  assert(_succ != Self, "invariant");
+  assert(((oop)(object()))->mark() == markOopDesc::encode(this), "invariant");
+
+  // The thread -- now the owner -- is back in vm mode.
+  // Report the glorious news via TI,DTrace and jvmstat.
+  // The probe effect is non-trivial.  All the reportage occurs
+  // while we hold the monitor, increasing the length of the critical
+  // section.  Amdahl's parallel speedup law comes vividly into play.
+  //
+  // Another option might be to aggregate the events (thread local or
+  // per-monitor aggregation) and defer reporting until a more opportune
+  // time -- such as next time some thread encounters contention but has
+  // yet to acquire the lock.  While spinning that thread could
+  // spinning we could increment JVMStat counters, etc.
+
+  DTRACE_MONITOR_PROBE(contended__entered, this, object(), jt);
+  if (JvmtiExport::should_post_monitor_contended_entered()) {
+    JvmtiExport::post_monitor_contended_entered(jt, this);
+
+    // The current thread already owns the monitor and is not going to
+    // call park() for the remainder of the monitor enter protocol. So
+    // it doesn't matter if the JVMTI_EVENT_MONITOR_CONTENDED_ENTERED
+    // event handler consumed an unpark() issued by the thread that
+    // just exited the monitor.
+  }
+  if (event.should_commit()) {
+    event.set_previousOwner((uintptr_t)_previous_owner_tid);
+    event.commit();
+  }
+  OM_PERFDATA_OP(ContendedLockAttempts, inc());
+}
+```
+
+### park方法
+
+![image-20210209233651779](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210209233651779.png)
+
+将线程暂停
+
+```c++
+void os::PlatformEvent::park() {       // AKA "down()"
+  // Transitions for _event:
+  //   -1 => -1 : illegal
+  //    1 =>  0 : pass - return immediately
+  //    0 => -1 : block; then set _event to 0 before returning
+
+  // Invariant: Only the thread associated with the PlatformEvent
+  // may call park().
+  assert(_nParked == 0, "invariant");
+
+  int v;
+
+  // atomically decrement _event
+  for (;;) {
+    v = _event;
+    if (Atomic::cmpxchg(v - 1, &_event, v) == v) break;
+  }
+  guarantee(v >= 0, "invariant");
+
+  if (v == 0) { // Do this the hard way by blocking ...
+      // 操作系统的mutex
+    int status = pthread_mutex_lock(_mutex);
+    assert_status(status == 0, status, "mutex_lock");
+    guarantee(_nParked == 0, "invariant");
+    ++_nParked;
+    while (_event < 0) {
+      // OS-level "spurious wakeups" are ignored
+      status = pthread_cond_wait(_cond, _mutex);
+      assert_status(status == 0, status, "cond_wait");
+    }
+    --_nParked;
+
+    _event = 0;
+    status = pthread_mutex_unlock(_mutex);
+    assert_status(status == 0, status, "mutex_unlock");
+    // Paranoia to ensure our locked and lock-free paths interact
+    // correctly with each other.
+    OrderAccess::fence();
+  }
+  guarantee(_event >= 0, "invariant");
+}
+```
+
+
+
+### synchronizer.cpp
