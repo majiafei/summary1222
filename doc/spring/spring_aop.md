@@ -734,6 +734,7 @@ public List<Object> getInterceptorsAndDynamicInterceptionAdvice(
                // 匹配
                match = mm.matches(method, actualClass);
             }
+             // 匹配成功
             if (match) {
                MethodInterceptor[] interceptors = registry.getInterceptors(advisor);
                if (mm.isRuntime()) {
