@@ -691,3 +691,77 @@ public class UserAspect {
 
 }
 ```
+
+# advisor
+
+是由pointcut和advice组成的。
+
+pointcut在一下几处得到了使用：
+
+1、在生成代理之前，和当前bean中的方法匹配，至少匹配上了一个方法，则表明当前bean需要生成代理。
+
+2、执行目标方法的时候会被拦截，转而执行代理方法，在代理方法中会获取advisor，如果是pointcutadvior，那么接着获取pointcut和当前目标方法进行匹配，匹配成功，就会将advice返回。
+
+```java
+// 获取和目标方法匹配的advice
+@Override
+public List<Object> getInterceptorsAndDynamicInterceptionAdvice(
+      Advised config, Method method, @Nullable Class<?> targetClass) {
+
+   // This is somewhat tricky... We have to process introductions first,
+   // but we need to preserve order in the ultimate list.
+   AdvisorAdapterRegistry registry = GlobalAdvisorAdapterRegistry.getInstance();
+   Advisor[] advisors = config.getAdvisors();
+   List<Object> interceptorList = new ArrayList<>(advisors.length);
+   Class<?> actualClass = (targetClass != null ? targetClass : method.getDeclaringClass());
+   Boolean hasIntroductions = null;
+
+   for (Advisor advisor : advisors) {
+      // 判断advisor的类型
+      if (advisor instanceof PointcutAdvisor) {
+         // Add it conditionally.
+         PointcutAdvisor pointcutAdvisor = (PointcutAdvisor) advisor;
+         if (config.isPreFiltered() || pointcutAdvisor.getPointcut().getClassFilter().matches(actualClass)) {
+            MethodMatcher mm = pointcutAdvisor.getPointcut().getMethodMatcher();
+            boolean match;
+            if (mm instanceof IntroductionAwareMethodMatcher) {
+               if (hasIntroductions == null) {
+                  hasIntroductions = hasMatchingIntroductions(advisors, actualClass);
+               }
+               match = ((IntroductionAwareMethodMatcher) mm).matches(method, actualClass, hasIntroductions);
+            }
+            else {
+               // 匹配
+               match = mm.matches(method, actualClass);
+            }
+            if (match) {
+               MethodInterceptor[] interceptors = registry.getInterceptors(advisor);
+               if (mm.isRuntime()) {
+                  // Creating a new object instance in the getInterceptors() method
+                  // isn't a problem as we normally cache created chains.
+                  for (MethodInterceptor interceptor : interceptors) {
+                     interceptorList.add(new InterceptorAndDynamicMethodMatcher(interceptor, mm));
+                  }
+               }
+               else {
+                  interceptorList.addAll(Arrays.asList(interceptors));
+               }
+            }
+         }
+      }
+      else if (advisor instanceof IntroductionAdvisor) {
+         IntroductionAdvisor ia = (IntroductionAdvisor) advisor;
+         if (config.isPreFiltered() || ia.getClassFilter().matches(actualClass)) {
+            Interceptor[] interceptors = registry.getInterceptors(advisor);
+            interceptorList.addAll(Arrays.asList(interceptors));
+         }
+      }
+      else {
+         Interceptor[] interceptors = registry.getInterceptors(advisor);
+         interceptorList.addAll(Arrays.asList(interceptors));
+      }
+   }
+
+   return interceptorList;
+}
+```
