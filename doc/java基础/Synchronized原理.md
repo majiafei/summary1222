@@ -526,9 +526,148 @@ Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
 
 ![image-20210203222019331](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203222019331.png)
 
+## 偏向锁
+
+### 批量偏向
+
+对同一个类进行多次的撤销偏向，轻量级加锁，再解锁，就会再次偏向这个类，阈值默认达到20次以上。
+
+```java
+private static class Lock {
+
+}
+
+
+public static void main(String[] args) throws InterruptedException {
+    List<Lock> list = new ArrayList<>(30);
+    Thread t1 = new Thread(() -> {
+        for (int i = 0; i < 30; i++) {
+            Lock lock = new Lock();
+            list.add(lock);
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t1.start();
+    t1.join();
+
+    Thread t2 = new Thread(() -> {
+        for (int i = 0; i < 30; i++) {
+            Lock lock = list.get(i);
+            synchronized (lock) {// 第20次加锁的时候又重新偏向了线程2，之前是轻量级锁，所以这里锁降级了。
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t2.start();
+}
+```
+
+![image-20210223224911178](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210223224911178.png)
+
+
+
+### 批量撤销
+
+经历了40次撤销同一个类，那么再次创建一个新的对象，也不会偏向。
+
+
+
+```java
+private static class Lock {
+
+}
+
+
+public static void main(String[] args) throws InterruptedException {
+    List<Lock> list = new ArrayList<>(30);
+    int m = 41;
+    Thread t1 = new Thread(() -> {
+        for (int i = 0; i < m; i++) {
+            Lock lock = new Lock();
+            list.add(lock);
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t1.start();
+
+
+    Thread.sleep(10000);
+
+    // 前19个为轻量级锁，第20个开始为偏向锁，是批量重偏向的
+    // 经历了19次的偏向撤销
+    Thread t2 = new Thread(() -> {
+        for (int i = 0; i < m; i++) {
+            Lock lock = list.get(i);
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t2.start();
+
+
+    Thread.sleep(10000);
+
+    Thread t3 = new Thread(() -> {
+        for (int i = 0; i < m; i++) {
+            Lock lock = list.get(i);
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t3.start();
+
+    t3.join();
+
+    log.debug(ClassLayout.parseInstance(new Lock()).toPrintable());
+}
+```
+
+![image-20210223232904936](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210223232904936.png)
+
+### 偏向过期
+
+
+
+
+
+
+
 ## 轻量级加锁
 
 ![image-20210203224426353](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210203224426353.png)
+
+```c++
+// traditional lightweight locking
+          // 偏向失败，升级为轻量级锁
+          if (!success) {
+            // mark word设置为无锁状态，这时候锁的状态为001(不可偏向无锁状态)
+            markOop displaced = lockee->mark()->set_unlocked();
+            // 将mark work中的信息拷贝到线程中的称为lock record的栈帧中。
+            entry->lock()->set_displaced_header(displaced);
+            bool call_vm = UseHeavyMonitors;
+            // 如果lockee的对象头已经设置为其他的对象头(存在竞争的情况),那么就会设置失败,
+            // 如果lockee将对象头设置为displaced，就么就代表；加锁成功
+            // 2021-02-23 21:45(下面是今天添加的注释，之前的可能不正确)
+            // 判断对象锁的mark和displaced是否相同，如果相同就将对象头的mark word设置为entry(锁记录)
+            if (call_vm || lockee->cas_set_mark((markOop)entry, displaced) != displaced) {
+              // Is it simple recursive case?
+              if (!call_vm && THREAD->is_lock_owned((address) displaced->clear_lock_bits())) {
+                entry->lock()->set_displaced_header(NULL);
+              } else {
+                CALL_VM(InterpreterRuntime::monitorenter(THREAD, entry), handle_exception);
+              }
+            }
+          }
+          UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);
+```
+
+
 
 ## 去掉偏向延迟的jvm参数，即打开偏向延迟，延迟时间大概为4s，睡眠超过4s，那么锁状态为可偏向的
 
