@@ -766,3 +766,66 @@ public List<Object> getInterceptorsAndDynamicInterceptionAdvice(
    return interceptorList;
 }
 ```
+
+# spring生成代理的几种方式
+
+1、利用AOP
+
+2、静态代理（每个方法的实现不同，就可以使用静态代理）
+
+3、可以直接继承AbstractAutoProxyCreator
+
+```java
+public class SeataAutoDataSourceProxyCreator extends AbstractAutoProxyCreator {
+    private static final Logger LOGGER = LoggerFactory.getLogger(SeataAutoDataSourceProxyCreator.class);
+    private final String[] excludes;
+    private final Advisor advisor = new DefaultIntroductionAdvisor(new SeataAutoDataSourceProxyAdvice());
+
+    public SeataAutoDataSourceProxyCreator(boolean useJdkProxy, String[] excludes) {
+        this.excludes = excludes;
+        setProxyTargetClass(!useJdkProxy);
+    }
+
+    @Override
+    protected Object[] getAdvicesAndAdvisorsForBean(Class<?> beanClass, String beanName, TargetSource customTargetSource) throws BeansException {
+        if (LOGGER.isInfoEnabled()) {
+            LOGGER.info("Auto proxy of [{}]", beanName);
+        }
+        return new Object[]{advisor};
+    }
+
+    @Override
+    protected boolean shouldSkip(Class<?> beanClass, String beanName) {
+        return SeataProxy.class.isAssignableFrom(beanClass) ||
+            !DataSource.class.isAssignableFrom(beanClass) ||
+            Arrays.asList(excludes).contains(beanClass.getName());
+    }
+}
+
+public class SeataAutoDataSourceProxyAdvice implements MethodInterceptor, IntroductionInfo {
+
+    @Override
+    public Object invoke(MethodInvocation invocation) throws Throwable {
+        DataSourceProxy dataSourceProxy = DataSourceProxyHolder.get().putDataSource((DataSource) invocation.getThis());
+        // 获取需要执行的方法
+        Method method = invocation.getMethod();
+        Object[] args = invocation.getArguments();
+        // 寻找这个方法
+        Method m = BeanUtils.findDeclaredMethod(DataSourceProxy.class, method.getName(), method.getParameterTypes());
+        if (null != m) {// 如果在dataSourceProxy中找到了这个方法，就去执行dataSourceProxy的方法。
+            // 转而去执行dataSourceProxy的这个方法
+            return m.invoke(dataSourceProxy, args);
+        } else {
+            return invocation.proceed();
+        }
+    }
+
+    @Override
+    public Class<?>[] getInterfaces() {
+        return new Class[]{SeataProxy.class};
+    }
+
+}
+```
+
+![点击并拖拽以移动](data:image/gif;base64,R0lGODlhAQABAPABAP///wAAACH5BAEKAAAALAAAAAABAAEAAAICRAEAOw==)
