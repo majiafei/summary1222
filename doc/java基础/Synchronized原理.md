@@ -912,3 +912,8 @@ void os::PlatformEvent::park() {       // AKA "down()"
 
 
 ### synchronizer.cpp
+
+### mutex机制
+
+https://cloud.tencent.com/developer/article/1082708
+
