@@ -454,6 +454,10 @@ Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
 
 # synchronized实现原理
 
+实现主要是在下图中的c文件中。
+
+![image-20210224221635981](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210224221635981.png)
+
 ## 两个线程交替获取锁，一个线程获取完锁后，另一个线程再获取锁
 
 ```java
@@ -528,9 +532,20 @@ Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
 
 ## 偏向锁
 
+### 批量偏向和批量撤销的阈值
+
+```
+     -XX:+PrintFlagsFinal(JVM参数)
+     
+     intx BiasedLockingBulkRebiasThreshold          = 20                                  {product}
+     intx BiasedLockingBulkRevokeThreshold          = 40                                  {product}
+```
+
+
+
 ### 批量偏向
 
-对同一个类进行多次的撤销偏向，轻量级加锁，再解锁，就会再次偏向这个类，阈值默认达到20次以上。
+对同一个类进行多次的撤销偏向，轻量级加锁，再解锁，就会再次偏向这个类，阈值默认达到20次(只要次数达到20即可，几遍是由不同的线程去撤销偏向，只要撤销次数达到20，就开始偏向)以上。
 
 ```java
 private static class Lock {
@@ -565,6 +580,98 @@ public static void main(String[] args) throws InterruptedException {
 ```
 
 ![image-20210223224911178](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210223224911178.png)
+
+
+
+例子二：重新偏向于撤销偏向的线程无关，只与次数有关
+
+```java
+private static class Lock {
+
+}
+
+
+public static void main(String[] args) throws InterruptedException {
+    List<Lock> list = new ArrayList<>(30);
+    List<Lock> list1 = new ArrayList<>(30);
+    int m = 40;
+    Thread t1 = new Thread(() -> {
+        for (int i = 0; i < m; i++) {
+            Lock lock = new Lock();
+            if (i < 21) {
+                list.add(lock);
+            } else {
+                list1.add(lock);
+            }
+
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t1.start();
+
+
+    Thread.sleep(10000);
+
+    // 前19个为轻量级锁，第20个开始为偏向锁，是批量重偏向的
+    // 经历了19次的偏向撤销
+    Thread t2 = new Thread(() -> {
+        for (int i = 0; i < list.size(); i++) {
+            Lock lock = list.get(i);
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t2.start();
+
+
+    Thread.sleep(10000);
+
+    /**
+     * 前19个为轻量级锁，第二十个为偏向锁，偏向第二个线程，所以需撤销偏向，然后再加锁
+     * 后面经历的偏向次数加上前面第二个线程的偏向次数超过了40次，就开始撤销偏向，哪怕后面继续创建
+     * 新的对象，也不能偏向，锁的状态为001
+     */
+    Thread t3 = new Thread(() -> {
+        for (int i = 0; i < list1.size(); i++) {
+            Lock lock = list1.get(i);
+            synchronized (lock) {
+                log.debug("lock = " + i + ClassLayout.parseInstance(lock).toPrintable());
+            }
+        }
+    });
+    t3.start();
+
+    t3.join();
+
+    log.debug(ClassLayout.parseInstance(new Lock()).toPrintable());
+}
+```
+
+
+
+```c++
+ // 偏向过期： 撤销偏向的次数大于等于20次，就重新偏向
+            else if ((anticipated_bias_locking_value & epoch_mask_in_place) !=0) {
+              // try rebias
+              // 重新生成偏向当前线程的一个对象头
+              markOop new_header = (markOop) ( (intptr_t) lockee->klass()->prototype_header() | thread_ident);
+              if (hash != markOopDesc::no_hash) {
+                new_header = new_header->copy_set_hash(hash);
+              }
+              if (lockee->cas_set_mark(new_header, mark) == mark) {
+                if (PrintBiasedLockingStatistics)
+                  (* BiasedLocking::rebiased_lock_entry_count_addr())++;
+              }
+              else {
+                // 发生了竞争，就会执行这行代码
+                CALL_VM(InterpreterRuntime::monitorenter(THREAD, entry), handle_exception);
+              }
+              success = true;
+            }
+```
 
 
 
@@ -612,6 +719,11 @@ public static void main(String[] args) throws InterruptedException {
 
     Thread.sleep(10000);
 
+        /**
+         * 前19个为轻量级锁，第二十个为偏向锁，偏向第二个线程，所以需撤销偏向，然后再加锁
+         * 后面经历的偏向次数加上前面第二个线程的偏向次数超过了40次，就开始撤销偏向，哪怕后面继续创建
+         * 新的对象，也不能偏向，锁的状态为001
+         */    
     Thread t3 = new Thread(() -> {
         for (int i = 0; i < m; i++) {
             Lock lock = list.get(i);
@@ -694,6 +806,8 @@ public static void main(String[] args) throws InterruptedException {
 hotspot源码在以下几个文件中：
 
 ### objectMonitor.cpp
+
+![image-20210225220441707](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210225220441707.png)
 
 ![image-20210209231709023](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210209231709023.png)
 
@@ -861,6 +975,8 @@ void ObjectMonitor::enter(TRAPS) {
 
 ### park方法
 
+![image-20210225220329166](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210225220329166.png)
+
 ![image-20210209233651779](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210209233651779.png)
 
 将线程暂停
@@ -913,7 +1029,4 @@ void os::PlatformEvent::park() {       // AKA "down()"
 
 ### synchronizer.cpp
 
-### mutex机制
-
-https://cloud.tencent.com/developer/article/1082708
-
+![image-20210224223934040](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210224223934040.png)
