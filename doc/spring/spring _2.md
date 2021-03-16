@@ -121,3 +121,27 @@ public class Replacer implements MethodReplacer {
 </bean>
 <bean class="com.spring.mjf.replace.Replacer" id="replacer"></bean>
 ```
+
+### property
+
+用PropertyValue类来封装property标签的数据。
+
+### constructor-arg
+
+ConstructorArgumentValues来封装。
+
+# 装饰bean
+
+![image-20210316213626397](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210316213626397.png)
+
+```java
+bdHolder = delegate.decorateBeanDefinitionIfRequired(ele, bdHolder);
+```
+
+```xml
+<!--    装饰bean-->
+   <bean id="user3" class="com.spring.mjf.entity.User" c:name="xiaoming" p:id="1"/>
+```
+
+# 别名注册
+
