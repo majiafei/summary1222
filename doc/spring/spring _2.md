@@ -187,7 +187,7 @@ public class SpiServiceImpl implements SpiService {
 
 粒度不够细。获取实现类的时候获取了很多个。
 
-# 自定义标签
+# Spring自定义标签
 
 ## context
 
@@ -286,9 +286,49 @@ protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
 
 ## Autowired
 
+AutowiredAnnotationBeanPostProcessor。
+
+1、实例化：registerBeanPostProcessors(beanFactory);
+
+2、注册：AnnotationConfigUtils.registerAnnotationConfigProcessors
+
+3、inject
+
+```java
+PropertyValues pvsToUse = ibp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
+```
+
 ## Resource
 
-### PostConstruct
+CommonAnnotationBeanPostProcessor类来处理该注解的。
+
+```java
+@Override
+public void postProcessMergedBeanDefinition(RootBeanDefinition beanDefinition, Class<?> beanType, String beanName) {
+   super.postProcessMergedBeanDefinition(beanDefinition, beanType, beanName);
+   // 将在方法有@Resource包装成InjectionMetadata
+   InjectionMetadata metadata = findResourceMetadata(beanName, beanType, null);
+   metadata.checkConfigMembers(beanDefinition);
+}
+```
+
+## PostConstruct
+
+CommonAnnotationBeanPostProcessor类来处理该注解的。
+
+```java
+public CommonAnnotationBeanPostProcessor() {
+   setOrder(Ordered.LOWEST_PRECEDENCE - 3);
+    // 设置注解的类型为PostConstruct
+   setInitAnnotationType(PostConstruct.class);
+   setDestroyAnnotationType(PreDestroy.class);
+   ignoreResourceType("javax.xml.ws.WebServiceContext");
+}
+```
+
+## PreDestroy
+
+CommonAnnotationBeanPostProcessor类来处理该注解的。
 
 # 自定义标签
 
@@ -411,3 +451,4 @@ autoindex on;
 ```
 
 ![image-20210321115021528](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210321115021528.png)
+
