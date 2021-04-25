@@ -284,6 +284,30 @@ protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
 
 # 注解
 
+注解注入属性：
+
+1、收集注解：
+
+```java
+// Allow post-processors to modify the merged bean definition.
+synchronized (mbd.postProcessingLock) {
+   if (!mbd.postProcessed) {
+      try {
+         // 收集添加注解的方法或者字段，以便实现依赖注入
+         // @Autowired、@PostConstruct、@PreDestroy注解
+         applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
+      }
+      catch (Throwable ex) {
+         throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+               "Post-processing of merged bean definition failed", ex);
+      }
+      mbd.postProcessed = true;
+   }
+}
+```
+
+2、通过反射注入属性
+
 ## Autowired
 
 AutowiredAnnotationBeanPostProcessor。
@@ -452,3 +476,84 @@ autoindex on;
 
 ![image-20210321115021528](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210321115021528.png)
 
+# 如何解决循环依赖
+
+共有三级缓存。
+
+```java
+// 一级 缓存
+/** Cache of singleton objects: bean name to bean instance. */
+private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>(256);
+
+// 三级缓存
+/** Cache of singleton factories: bean name to ObjectFactory. */
+private final Map<String, ObjectFactory<?>> singletonFactories = new HashMap<>(16);
+
+// 二级缓存
+/** Cache of early singleton objects: bean name to bean instance. */
+private final Map<String, Object> earlySingletonObjects = new HashMap<>(16);
+```
+
+
+
+## 获取实例
+
+```java
+protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+   // 从一级缓存中获取(已经实例化且设置好属性的实例，是一个完整的实例)
+   Object singletonObject = this.singletonObjects.get(beanName);
+   if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+      synchronized (this.singletonObjects) {
+         // 从二级缓存中获取，这个是提前实例化(是从ObjectFactory获取的)好的
+         singletonObject = this.earlySingletonObjects.get(beanName);
+         if (singletonObject == null && allowEarlyReference) {
+            // 从ObjectFactory中获取，这个工厂是在刚刚实例化好bean时加入的
+            ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
+            if (singletonFactory != null) {
+               singletonObject = singletonFactory.getObject();
+               this.earlySingletonObjects.put(beanName, singletonObject);
+               this.singletonFactories.remove(beanName);
+            }
+         }
+      }
+   }
+   return singletonObject;
+}
+```
+
+## 把刚刚实例化好的实例添加到singletonFactories
+
+```java
+// Eagerly cache singletons to be able to resolve circular references
+// even when triggered by lifecycle interfaces like BeanFactoryAware.
+boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
+      isSingletonCurrentlyInCreation(beanName));
+if (earlySingletonExposure) {
+   if (logger.isTraceEnabled()) {
+      logger.trace("Eagerly caching bean '" + beanName +
+            "' to allow for resolving potential circular references");
+   }
+   // 添加到singletonFactories，lamda表达式是实现了ObjectFactory中getObject方法
+   addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+}
+
+
+protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+    Object exposedObject = bean;
+    if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+        for (BeanPostProcessor bp : getBeanPostProcessors()) {
+            if (bp instanceof SmartInstantiationAwareBeanPostProcessor) {
+                SmartInstantiationAwareBeanPostProcessor ibp = (SmartInstantiationAwareBeanPostProcessor) bp;
+                exposedObject = ibp.getEarlyBeanReference(exposedObject, beanName);
+            }
+        }
+    }
+    return exposedObject;
+}
+```
+
+## 注意
+
+构造函数的循环依赖是不允许的。
+
+属性的循环依赖是允许的。
