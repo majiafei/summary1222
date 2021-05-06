@@ -4,6 +4,108 @@ AbstractApplication继承了BeanFactory，同时又进行了扩展。
 
 ![image-20210302213442753](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210302213442753.png)
 
+# ApplicationContext
+
+## AnnotationConfigApplicationContext
+
+```java
+@Test
+public void testComponentScan() {
+    // 会将ComponentScanBean添加到spring的容器中，然后由ConfigurationClassPostProcessor类去处理ComponentScanBean上的所有的注解
+    AnnotationConfigApplicationContext ctx =  new AnnotationConfigApplicationContext(ComponentScanBean.class);
+
+    System.out.println(ctx.getBean(OrderService.class));
+}
+```
+
+专门用来处理利用注解配置的bean
+
+```java
+/**
+ * Create a new AnnotationConfigApplicationContext that needs to be populated
+ * through {@link #register} calls and then manually {@linkplain #refresh refreshed}.
+ */
+public AnnotationConfigApplicationContext() {
+    // 注解读取器
+   this.reader = new AnnotatedBeanDefinitionReader(this);
+    // 用来扫描包的
+   this.scanner = new ClassPathBeanDefinitionScanner(this);
+}
+```
+
+## 注册注解的processors
+
+ConfigurationClassPostProcessor非常重要，用来处理众多注解的。例如：ComponentSacn，@Configuration，@Bean，@Import等等
+
+![image-20210501165235374](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210501165235374.png)
+
+```java
+public static Set<BeanDefinitionHolder> registerAnnotationConfigProcessors(
+      BeanDefinitionRegistry registry, @Nullable Object source) {
+
+   DefaultListableBeanFactory beanFactory = unwrapDefaultListableBeanFactory(registry);
+   if (beanFactory != null) {
+      if (!(beanFactory.getDependencyComparator() instanceof AnnotationAwareOrderComparator)) {
+         beanFactory.setDependencyComparator(AnnotationAwareOrderComparator.INSTANCE);
+      }
+      if (!(beanFactory.getAutowireCandidateResolver() instanceof ContextAnnotationAutowireCandidateResolver)) {
+         beanFactory.setAutowireCandidateResolver(new ContextAnnotationAutowireCandidateResolver());
+      }
+   }
+
+   Set<BeanDefinitionHolder> beanDefs = new LinkedHashSet<>(8);
+
+   if (!registry.containsBeanDefinition(CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+       // ConfigurationClassPostProcessor非常重要
+      RootBeanDefinition def = new RootBeanDefinition(ConfigurationClassPostProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, CONFIGURATION_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   if (!registry.containsBeanDefinition(AUTOWIRED_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(AutowiredAnnotationBeanPostProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, AUTOWIRED_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   // Check for JSR-250 support, and if present add the CommonAnnotationBeanPostProcessor.
+   if (jsr250Present && !registry.containsBeanDefinition(COMMON_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(CommonAnnotationBeanPostProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, COMMON_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   // Check for JPA support, and if present add the PersistenceAnnotationBeanPostProcessor.
+   if (jpaPresent && !registry.containsBeanDefinition(PERSISTENCE_ANNOTATION_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition();
+      try {
+         def.setBeanClass(ClassUtils.forName(PERSISTENCE_ANNOTATION_PROCESSOR_CLASS_NAME,
+               AnnotationConfigUtils.class.getClassLoader()));
+      }
+      catch (ClassNotFoundException ex) {
+         throw new IllegalStateException(
+               "Cannot load optional framework class: " + PERSISTENCE_ANNOTATION_PROCESSOR_CLASS_NAME, ex);
+      }
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, PERSISTENCE_ANNOTATION_PROCESSOR_BEAN_NAME));
+   }
+
+   if (!registry.containsBeanDefinition(EVENT_LISTENER_PROCESSOR_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(EventListenerMethodProcessor.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, EVENT_LISTENER_PROCESSOR_BEAN_NAME));
+   }
+
+   if (!registry.containsBeanDefinition(EVENT_LISTENER_FACTORY_BEAN_NAME)) {
+      RootBeanDefinition def = new RootBeanDefinition(DefaultEventListenerFactory.class);
+      def.setSource(source);
+      beanDefs.add(registerPostProcessor(registry, def, EVENT_LISTENER_FACTORY_BEAN_NAME));
+   }
+
+   return beanDefs;
+}
+```
+
 # Bean标签
 
 ## 属性
@@ -282,6 +384,121 @@ protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
 
 注解的处理
 
+# BeanFactoryPostProcessor
+
+## ConfigurationClassPostProcessor
+
+```java
+/**
+ * Build and validate a configuration model based on the registry of
+ * {@link Configuration} classes.
+ */
+public void processConfigBeanDefinitions(BeanDefinitionRegistry registry) {
+   List<BeanDefinitionHolder> configCandidates = new ArrayList<>();
+   String[] candidateNames = registry.getBeanDefinitionNames();
+
+   for (String beanName : candidateNames) {
+      BeanDefinition beanDef = registry.getBeanDefinition(beanName);
+      if (beanDef.getAttribute(ConfigurationClassUtils.CONFIGURATION_CLASS_ATTRIBUTE) != null) {
+         if (logger.isDebugEnabled()) {
+            logger.debug("Bean definition has already been processed as a configuration class: " + beanDef);
+         }
+      }
+      else if (ConfigurationClassUtils.checkConfigurationClassCandidate(beanDef, this.metadataReaderFactory)) {
+         configCandidates.add(new BeanDefinitionHolder(beanDef, beanName));
+      }
+   }
+
+   // Return immediately if no @Configuration classes were found
+   if (configCandidates.isEmpty()) {
+      return;
+   }
+
+   // Sort by previously determined @Order value, if applicable
+    // 排序
+   configCandidates.sort((bd1, bd2) -> {
+      int i1 = ConfigurationClassUtils.getOrder(bd1.getBeanDefinition());
+      int i2 = ConfigurationClassUtils.getOrder(bd2.getBeanDefinition());
+      return Integer.compare(i1, i2);
+   });
+
+   // Detect any custom bean name generation strategy supplied through the enclosing application context
+   SingletonBeanRegistry sbr = null;
+   if (registry instanceof SingletonBeanRegistry) {
+      sbr = (SingletonBeanRegistry) registry;
+      if (!this.localBeanNameGeneratorSet) {
+         BeanNameGenerator generator = (BeanNameGenerator) sbr.getSingleton(
+               AnnotationConfigUtils.CONFIGURATION_BEAN_NAME_GENERATOR);
+         if (generator != null) {
+            this.componentScanBeanNameGenerator = generator;
+            this.importBeanNameGenerator = generator;
+         }
+      }
+   }
+
+   if (this.environment == null) {
+      this.environment = new StandardEnvironment();
+   }
+
+   // Parse each @Configuration class
+   ConfigurationClassParser parser = new ConfigurationClassParser(
+         this.metadataReaderFactory, this.problemReporter, this.environment,
+         this.resourceLoader, this.componentScanBeanNameGenerator, registry);
+
+   Set<BeanDefinitionHolder> candidates = new LinkedHashSet<>(configCandidates);
+   Set<ConfigurationClass> alreadyParsed = new HashSet<>(configCandidates.size());
+   do {
+       // 解析
+      parser.parse(candidates);
+      parser.validate();
+
+      Set<ConfigurationClass> configClasses = new LinkedHashSet<>(parser.getConfigurationClasses());
+      configClasses.removeAll(alreadyParsed);
+
+      // Read the model and create bean definitions based on its content
+      if (this.reader == null) {
+         this.reader = new ConfigurationClassBeanDefinitionReader(
+               registry, this.sourceExtractor, this.resourceLoader, this.environment,
+               this.importBeanNameGenerator, parser.getImportRegistry());
+      }
+      this.reader.loadBeanDefinitions(configClasses);
+      alreadyParsed.addAll(configClasses);
+
+      candidates.clear();
+      if (registry.getBeanDefinitionCount() > candidateNames.length) {
+         String[] newCandidateNames = registry.getBeanDefinitionNames();
+         Set<String> oldCandidateNames = new HashSet<>(Arrays.asList(candidateNames));
+         Set<String> alreadyParsedClasses = new HashSet<>();
+         for (ConfigurationClass configurationClass : alreadyParsed) {
+            alreadyParsedClasses.add(configurationClass.getMetadata().getClassName());
+         }
+         for (String candidateName : newCandidateNames) {
+            if (!oldCandidateNames.contains(candidateName)) {
+               BeanDefinition bd = registry.getBeanDefinition(candidateName);
+               if (ConfigurationClassUtils.checkConfigurationClassCandidate(bd, this.metadataReaderFactory) &&
+                     !alreadyParsedClasses.contains(bd.getBeanClassName())) {
+                  candidates.add(new BeanDefinitionHolder(bd, candidateName));
+               }
+            }
+         }
+         candidateNames = newCandidateNames;
+      }
+   }
+   while (!candidates.isEmpty());
+
+   // Register the ImportRegistry as a bean in order to support ImportAware @Configuration classes
+   if (sbr != null && !sbr.containsSingleton(IMPORT_REGISTRY_BEAN_NAME)) {
+      sbr.registerSingleton(IMPORT_REGISTRY_BEAN_NAME, parser.getImportRegistry());
+   }
+
+   if (this.metadataReaderFactory instanceof CachingMetadataReaderFactory) {
+      // Clear cache in externally provided MetadataReaderFactory; this is a no-op
+      // for a shared cache since it'll be cleared by the ApplicationContext.
+      ((CachingMetadataReaderFactory) this.metadataReaderFactory).clearCache();
+   }
+}
+```
+
 # 注解
 
 注解注入属性：
@@ -353,6 +570,24 @@ public CommonAnnotationBeanPostProcessor() {
 ## PreDestroy
 
 CommonAnnotationBeanPostProcessor类来处理该注解的。
+
+## @Import
+
+ConfigurationClassPostProcessor
+
+引入需要引入的类，比如我们可能依赖一些jar包，但是jar包的类一般是不去扫描的，但是又需要引入该jar包的类，就可以使用import注解。
+
+可以写个类实现ImportBeanDefinitionRegistrar接口，引入需要引入的类。
+
+## @ComponentScan
+
+ConfigurationClassPostProcessor
+
+## @Bean
+
+ConfigurationClassPostProcessor
+
+
 
 # 自定义标签
 
@@ -557,3 +792,59 @@ protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, 
 构造函数的循环依赖是不允许的。
 
 属性的循环依赖是允许的。
+
+# FactoryBean
+
+## 作用
+
+可以用来给没有实现类的接口生成代理类。比如Mybatis的mapper接口、Feign。
+
+## 如何获取FactoryBean
+
+在beanName中加上"&"
+
+# Aop
+
+aop是代理有实现类的接口，而getObject借口可以代理没有实现类的接口。
+
+## AnnotationAwareAspectJAutoProxyCreator
+
+基于注解的方式
+
+### 类图
+
+![image-20210502203015324](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210502203015324.png)
+
+## aop的工具类
+
+AopConfigUtils
+
+## advice
+
+### before
+
+一个注解便是一个通知，spring会将其封装成为advice对象。
+
+### after
+
+### around
+
+### afterreturning
+
+### afterthrowing
+
+## MethodIntercepter
+
+
+
+# 实例的类型
+
+## single
+
+## prototype
+
+## request
+
+## session
+
+## globlal request
