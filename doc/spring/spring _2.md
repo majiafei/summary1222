@@ -835,7 +835,65 @@ AopConfigUtils
 
 ## MethodIntercepter
 
+也实现了Advice，相当于通知。
 
+## Advisor
+
+由Advice和PointCut组成。
+
+## TargetSource
+
+封装被代理对象（目标对象）
+
+## 动态代理
+
+### JDK动态代理
+
+JdkDynamicAopProxy
+
+### cglib代理
+
+ObjenesisCglibAopProxy
+
+## AOP的调用
+
+链式调用。
+
+```java
+@Nullable
+public Object proceed() throws Throwable {
+   // currentInterceptorIndex是一个游标，一直往后执行
+    // 为什么不用for循环呢？因为每次在调用advice之后又会调用到这个方法，如果用了for循环，那么每次都从头开始调用。for(int i = // 0; i < size; i++)
+   if (this.currentInterceptorIndex == this.interceptorsAndDynamicMethodMatchers.size() - 1) {
+      return invokeJoinpoint();
+   }
+
+    // 从数组中获取advice
+   Object interceptorOrInterceptionAdvice =
+         this.interceptorsAndDynamicMethodMatchers.get(++this.currentInterceptorIndex);
+   if (interceptorOrInterceptionAdvice instanceof InterceptorAndDynamicMethodMatcher) {
+      // Evaluate dynamic method matcher here: static part will already have
+      // been evaluated and found to match.
+      InterceptorAndDynamicMethodMatcher dm =
+            (InterceptorAndDynamicMethodMatcher) interceptorOrInterceptionAdvice;
+      Class<?> targetClass = (this.targetClass != null ? this.targetClass : this.method.getDeclaringClass());
+      if (dm.methodMatcher.matches(this.method, targetClass, this.arguments)) {
+         return dm.interceptor.invoke(this);
+      }
+      else {
+         // Dynamic matching failed.
+         // Skip this interceptor and invoke the next in the chain.
+         return proceed();
+      }
+   }
+   else {
+      // It's an interceptor, so we just invoke it: The pointcut will have
+      // been evaluated statically before this object was constructed.
+       // 调用advice
+      return ((MethodInterceptor) interceptorOrInterceptionAdvice).invoke(this);
+   }
+}
+```
 
 # 实例的类型
 
@@ -848,3 +906,154 @@ AopConfigUtils
 ## session
 
 ## globlal request
+
+# 事务
+
+事务和Connection一一绑定的。连接对象要和用户挂钩（请求）
+
+## 事务切面
+
+
+
+### 事务通知
+
+TransactionInterceptor是个事务通知，实现了MethodIntercepter方法，在aop调用链执行的时候，会执行invoke方法。
+
+![image-20210515204238496](C:\Users\MI\AppData\Roaming\Typora\typora-user-images\image-20210515204238496.png)
+
+```java
+/**
+ * General delegate for around-advice-based subclasses, delegating to several other template
+ * methods on this class. Able to handle {@link CallbackPreferringPlatformTransactionManager}
+ * as well as regular {@link PlatformTransactionManager} implementations and
+ * {@link ReactiveTransactionManager} implementations for reactive return types.
+ * @param method the Method being invoked
+ * @param targetClass the target class that we're invoking the method on
+ * @param invocation the callback to use for proceeding with the target invocation
+ * @return the return value of the method, if any
+ * @throws Throwable propagated from the target invocation
+ */
+@Nullable
+protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass,
+      final InvocationCallback invocation) throws Throwable {
+
+   // If the transaction attribute is null, the method is non-transactional.
+   TransactionAttributeSource tas = getTransactionAttributeSource();
+   final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+   final TransactionManager tm = determineTransactionManager(txAttr);
+
+   if (this.reactiveAdapterRegistry != null && tm instanceof ReactiveTransactionManager) {
+      ReactiveTransactionSupport txSupport = this.transactionSupportCache.computeIfAbsent(method, key -> {
+         if (KotlinDetector.isKotlinType(method.getDeclaringClass()) && KotlinDelegate.isSuspend(method)) {
+            throw new TransactionUsageException(
+                  "Unsupported annotated transaction on suspending function detected: " + method +
+                  ". Use TransactionalOperator.transactional extensions instead.");
+         }
+         ReactiveAdapter adapter = this.reactiveAdapterRegistry.getAdapter(method.getReturnType());
+         if (adapter == null) {
+            throw new IllegalStateException("Cannot apply reactive transaction to non-reactive return type: " +
+                  method.getReturnType());
+         }
+         return new ReactiveTransactionSupport(adapter);
+      });
+      return txSupport.invokeWithinTransaction(
+            method, targetClass, invocation, txAttr, (ReactiveTransactionManager) tm);
+   }
+
+   PlatformTransactionManager ptm = asPlatformTransactionManager(tm);
+   final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
+
+   if (txAttr == null || !(ptm instanceof CallbackPreferringPlatformTransactionManager)) {
+      // Standard transaction demarcation with getTransaction and commit/rollback calls.
+      TransactionInfo txInfo = createTransactionIfNecessary(ptm, txAttr, joinpointIdentification);
+
+      Object retVal;
+      try {
+         // This is an around advice: Invoke the next interceptor in the chain.
+         // This will normally result in a target object being invoked.
+         retVal = invocation.proceedWithInvocation();
+      }
+      catch (Throwable ex) {
+         // target invocation exception
+         completeTransactionAfterThrowing(txInfo, ex);
+         throw ex;
+      }
+      finally {
+         cleanupTransactionInfo(txInfo);
+      }
+
+      if (retVal != null && vavrPresent && VavrDelegate.isVavrTry(retVal)) {
+         // Set rollback-only in case of Vavr failure matching our rollback rules...
+         TransactionStatus status = txInfo.getTransactionStatus();
+         if (status != null && txAttr != null) {
+            retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
+         }
+      }
+
+      commitTransactionAfterReturning(txInfo);
+      return retVal;
+   }
+
+   else {
+      Object result;
+      final ThrowableHolder throwableHolder = new ThrowableHolder();
+
+      // It's a CallbackPreferringPlatformTransactionManager: pass a TransactionCallback in.
+      try {
+         result = ((CallbackPreferringPlatformTransactionManager) ptm).execute(txAttr, status -> {
+            TransactionInfo txInfo = prepareTransactionInfo(ptm, txAttr, joinpointIdentification, status);
+            try {
+               Object retVal = invocation.proceedWithInvocation();
+               if (retVal != null && vavrPresent && VavrDelegate.isVavrTry(retVal)) {
+                  // Set rollback-only in case of Vavr failure matching our rollback rules...
+                  retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
+               }
+               return retVal;
+            }
+            catch (Throwable ex) {
+               if (txAttr.rollbackOn(ex)) {
+                  // A RuntimeException: will lead to a rollback.
+                  if (ex instanceof RuntimeException) {
+                     throw (RuntimeException) ex;
+                  }
+                  else {
+                     throw new ThrowableHolderException(ex);
+                  }
+               }
+               else {
+                  // A normal return value: will lead to a commit.
+                  throwableHolder.throwable = ex;
+                  return null;
+               }
+            }
+            finally {
+               cleanupTransactionInfo(txInfo);
+            }
+         });
+      }
+      catch (ThrowableHolderException ex) {
+         throw ex.getCause();
+      }
+      catch (TransactionSystemException ex2) {
+         if (throwableHolder.throwable != null) {
+            logger.error("Application exception overridden by commit exception", throwableHolder.throwable);
+            ex2.initApplicationException(throwableHolder.throwable);
+         }
+         throw ex2;
+      }
+      catch (Throwable ex2) {
+         if (throwableHolder.throwable != null) {
+            logger.error("Application exception overridden by commit exception", throwableHolder.throwable);
+         }
+         throw ex2;
+      }
+
+      // Check result state: It might indicate a Throwable to rethrow.
+      if (throwableHolder.throwable != null) {
+         throw throwableHolder.throwable;
+      }
+      return result;
+   }
+}
+```
+
